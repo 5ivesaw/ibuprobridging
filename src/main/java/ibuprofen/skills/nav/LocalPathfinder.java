@@ -278,6 +278,10 @@ public final class LocalPathfinder {
             int furthest = i + 1;
             int maxLook = Math.min(raw.size() - 1, i + 12);
             for (int j = i + 2; j <= maxLook; j++) {
+                NavStep prev = raw.get(j - 1);
+                if (isChokepoint(world, prev.x(), prev.y(), prev.z())) {
+                    break;
+                }
                 NavStep cand = raw.get(j);
                 if (!isFlatWalk(cand.moveType()) || cand.y() != anchor.y()) {
                     break;
@@ -293,6 +297,12 @@ public final class LocalPathfinder {
             i = furthest;
         }
         return List.copyOf(out);
+    }
+
+    private static boolean isChokepoint(VoxelNavWorld world, int x, int y, int z) {
+        boolean blockedX = !world.isPassable(x - 1, y, z) && !world.isPassable(x + 1, y, z);
+        boolean blockedZ = !world.isPassable(x, y, z - 1) && !world.isPassable(x, y, z + 1);
+        return blockedX || blockedZ;
     }
 
     private static boolean hasVoidEdgeInSegment(List<NavStep> raw, int fromIdx, int toIdx, VoxelNavWorld world) {
