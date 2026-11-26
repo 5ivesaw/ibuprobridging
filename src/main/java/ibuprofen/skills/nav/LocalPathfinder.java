@@ -282,7 +282,8 @@ public final class LocalPathfinder {
                 if (!isFlatWalk(cand.moveType()) || cand.y() != anchor.y()) {
                     break;
                 }
-                if (hasSweptFlatCorridor(world, anchor.x(), anchor.y(), anchor.z(), cand.x(), cand.z())) {
+                boolean allowVoidEdge = hasVoidEdgeInSegment(raw, i, j, world);
+                if (hasSweptFlatCorridor(world, anchor.x(), anchor.y(), anchor.z(), cand.x(), cand.z(), allowVoidEdge)) {
                     furthest = j;
                 } else {
                     break;
@@ -294,7 +295,19 @@ public final class LocalPathfinder {
         return List.copyOf(out);
     }
 
-    private static boolean hasSweptFlatCorridor(VoxelNavWorld world, int x0, int y, int z0, int x1, int z1) {
+    private static boolean hasVoidEdgeInSegment(List<NavStep> raw, int fromIdx, int toIdx, VoxelNavWorld world) {
+        // Check interior nodes (excluding endpoints) — if A* stepped inward off a void cliff, don't pull back onto it
+        for (int k = fromIdx + 1; k < toIdx; k++) {
+            NavStep s = raw.get(k);
+            if (voidEdgePenalty(world, s.x(), s.y(), s.z()) > 0.0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasSweptFlatCorridor(
+            VoxelNavWorld world, int x0, int y, int z0, int x1, int z1, boolean allowVoidEdge) {
         double sx = x0 + 0.5;
         double sz = z0 + 0.5;
         double dx = (x1 + 0.5) - sx;
@@ -303,19 +316,25 @@ public final class LocalPathfinder {
         if (dist < 0.01) {
             return true;
         }
-        double nx = -dz / dist;
-        double nz = dx / dist;
-        double radius = 0.35;
-        int samples = Math.max(2, (int) Math.ceil(dist / 0.25));
-        for (int s = 1; s <= samples; s++) {
+        // Full 0.45m AABB clearance (0.30m player half-width + 0.15m margin) prevents snagging on 1-wide doorways
+        double r = 0.45;
+        int samples = Math.max(2, (int) Math.ceil(dist / 0.20));
+        for (int s = 1; s < samples; s++) {
             double t = (double) s / samples;
             double cx = sx + dx * t;
             double cz = sz + dz * t;
-            for (int side = -1; side <= 1; side++) {
-                int bx = (int) Math.floor(cx + nx * radius * side);
-                int bz = (int) Math.floor(cz + nz * radius * side);
-                if (!canStandAt(world, bx, y, bz)) {
-                    return false;
+            int minBx = (int) Math.floor(cx - r);
+            int maxBx = (int) Math.floor(cx + r);
+            int minBz = (int) Math.floor(cz - r);
+            int maxBz = (int) Math.floor(cz + r);
+            for (int bx = minBx; bx <= maxBx; bx++) {
+                for (int bz = minBz; bz <= maxBz; bz++) {
+                    if (!canStandAt(world, bx, y, bz)) {
+                        return false;
+                    }
+                    if (!allowVoidEdge && voidEdgePenalty(world, bx, y, bz) > 0.0) {
+                        return false;
+                    }
                 }
             }
         }
