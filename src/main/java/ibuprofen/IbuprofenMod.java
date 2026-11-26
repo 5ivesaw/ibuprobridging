@@ -8,6 +8,7 @@ import ibuprofen.motor.InputArbiter;
 import ibuprofen.skills.Skill;
 import ibuprofen.skills.SkillResult;
 import ibuprofen.telemetry.DebugRecorder;
+import ibuprofen.ui.IbuSettings;
 import ibuprofen.world.TickSnapshot;
 import ibuprofen.world.WorldState;
 import net.fabricmc.api.ClientModInitializer;
@@ -34,6 +35,7 @@ public final class IbuprofenMod implements ClientModInitializer {
     private final MatchMemory matchMemory = new MatchMemory();
     private final WorldState worldState = new WorldState();
     private final InputArbiter inputArbiter = new InputArbiter();
+    private final IbuSettings settings = new IbuSettings();
     private DebugRecorder debugRecorder;
     private Skill activeSkill = null;
 
@@ -71,6 +73,14 @@ public final class IbuprofenMod implements ClientModInitializer {
 
     public DebugRecorder debugRecorder() {
         return debugRecorder;
+    }
+
+    public IbuSettings settings() {
+        return settings;
+    }
+
+    public Skill activeSkill() {
+        return activeSkill;
     }
 
     public String activeSkillName() {

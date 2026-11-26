@@ -5,7 +5,10 @@
   "client": [
     "MinecraftTickMixin",
     "ClientPacketListenerMixin",
-    "KeyboardInputMixin"
+    "KeyboardInputMixin",
+    "KeyboardMenuMixin",
+    "LevelRendererMixin",
+    "HudMixin"
   ],
   "injectors": {
     "defaultRequire": 1

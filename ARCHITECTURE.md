@@ -70,6 +70,7 @@ src/main/java/ibuprofen/
 │   └── bedwars/    #   Phase 5: GeneratorSkill, DefendSkill, BreakBedSkill, RetreatSkill
 ├── planner/        # Layer 3 (Phase 6): MatchPlanner, GoalDeadlines
 ├── telemetry/      # Event-driven async DebugRecorder (.jsonl.gz), HumanTelemetryHooks
+├── ui/             # Toggleable 3D visuals (WorldOverlayRenderer), Status HUD, '[' Control Panel (IbuMenuScreen)
 ├── camera/         # Optional QoL (Phase 6): FreecamController (for TikTok/Shorts clips)
 └── command/        # Local client commands (#ibu status, #ibu mem, #ibu rec, #ibu stop)
 

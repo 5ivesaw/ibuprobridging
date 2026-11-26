@@ -8,10 +8,11 @@ import java.util.Map;
 import java.util.PriorityQueue;
 
 /**
- * Fast, BedWars-native 3D A* island walker inspired by Baritone's tick-cost moves
- * plus Pathadol's swept flat-corridor string-pulling smoother.
- * Handles solid island terrain, stairs/slabs, 1-3 block safe drops, 1-2 block gap parkour,
- * strict corner clearance, and void-edge avoidance without Baritone's survival bloat.
+ * Comprehensive BedWars-native 3D A* island navigator inspired by Baritone's tick-cost moves
+ * and Pathadol's swept corridor smoother.
+ * Supports: cardinal & diagonal walk, cardinal & diagonal step-up (+1Y), cardinal & diagonal
+ * safe drop (-1..-3Y), 1/2/3-block gap parkour (+0/-1/+1Y), ladder climbing, floating-goal
+ * ground snapping, void-edge avoidance, and 0.45m AABB corridor smoothing.
  */
 public final class LocalPathfinder {
 
@@ -21,17 +22,20 @@ public final class LocalPathfinder {
         }
     }
 
-    // Baritone-calibrated tick costs
     private static final double WALK_COST = 4.633;
     private static final double DIAG_COST = WALK_COST * 1.4142;
     private static final double STEP_UP_COST = 7.5;
+    private static final double DIAG_STEP_UP_COST = 9.4;
     private static final double DROP_BASE_COST = 4.5;
     private static final double DROP_PER_BLOCK_COST = 1.8;
     private static final double PARKOUR_1_GAP_COST = 10.5;
     private static final double PARKOUR_2_GAP_COST = 14.5;
+    private static final double PARKOUR_3_GAP_COST = 19.0;
+    private static final double LADDER_UP_COST = 8.5;
+    private static final double LADDER_DOWN_COST = 6.7;
     private static final double VOID_EDGE_PENALTY = 1.65;
 
-    private static final int DEFAULT_MAX_EXPANSIONS = 3500;
+    private static final int DEFAULT_MAX_EXPANSIONS = 12000;
     private static final int[][] CARDINALS = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
     private static final int[][] DIAGONALS = {{1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
 
@@ -55,22 +59,24 @@ public final class LocalPathfinder {
         if (world == null) {
             return NavPath.unreachable(0);
         }
+        // Snap floating POI targets (e.g. Diamond/Emerald holograms) or clicked floor blocks to walkable Y
+        int snappedGoalY = world.snapToWalkableY(goalX, goalY, goalZ);
         double radiusSq = Math.max(0.5, arrivalRadius) * Math.max(0.5, arrivalRadius);
-        if (distSq3D(startX, startY, startZ, goalX, goalY, goalZ) <= radiusSq) {
+        if (distSq3D(startX, startY, startZ, goalX, snappedGoalY, goalZ) <= radiusSq) {
             NavStep here = new NavStep(startX, startY, startZ, NavMoveType.WALK, world.floorTopY(startX, startY - 1, startZ));
             return new NavPath(List.of(here), true, true, 0);
         }
 
         PriorityQueue<Node> open = new PriorityQueue<>();
-        Map<Long, Node> visited = new HashMap<>(512);
+        Map<Long, Node> visited = new HashMap<>(1024);
 
         Node start = new Node(startX, startY, startZ, null, NavMoveType.WALK, 0.0,
-                heuristic(startX, startY, startZ, goalX, goalY, goalZ));
+                heuristic(startX, startY, startZ, goalX, snappedGoalY, goalZ));
         open.add(start);
         visited.put(pack(startX, startY, startZ), start);
 
         Node bestPartial = start;
-        double bestPartialDistSq = distSq3D(startX, startY, startZ, goalX, goalY, goalZ);
+        double bestPartialDistSq = distSq3D(startX, startY, startZ, goalX, snappedGoalY, goalZ);
         int expanded = 0;
 
         while (!open.isEmpty() && expanded < maxExpansions) {
@@ -81,33 +87,42 @@ public final class LocalPathfinder {
             cur.closed = true;
             expanded++;
 
-            double dSq = distSq3D(cur.x, cur.y, cur.z, goalX, goalY, goalZ);
+            double dSq = distSq3D(cur.x, cur.y, cur.z, goalX, snappedGoalY, goalZ);
             if (dSq <= radiusSq) {
                 List<NavStep> raw = reconstruct(cur, world);
-                List<NavStep> smoothed = smoothFlatCorridor(raw, world);
-                return new NavPath(smoothed, true, true, expanded);
+                return new NavPath(smoothFlatCorridor(raw, world), true, true, expanded);
             }
             if (dSq < bestPartialDistSq) {
                 bestPartialDistSq = dSq;
                 bestPartial = cur;
             }
 
-            // 1. Cardinal WALK, STEP_UP (+1), DROP (-1..-3), and PARKOUR (1-2 block gap)
+            // 1. Ladder climbing (up/down)
+            if (world.isClimbable(cur.x, cur.y, cur.z)) {
+                if (world.isPassable(cur.x, cur.y + 1, cur.z) && world.isPassable(cur.x, cur.y + 2, cur.z)) {
+                    relax(open, visited, cur, cur.x, cur.y + 1, cur.z, NavMoveType.LADDER_UP,
+                            LADDER_UP_COST, goalX, snappedGoalY, goalZ);
+                }
+                if (world.isPassable(cur.x, cur.y - 1, cur.z)
+                        && (world.isClimbable(cur.x, cur.y - 1, cur.z) || world.isSolidFloor(cur.x, cur.y - 2, cur.z))) {
+                    relax(open, visited, cur, cur.x, cur.y - 1, cur.z, NavMoveType.LADDER_DOWN,
+                            LADDER_DOWN_COST, goalX, snappedGoalY, goalZ);
+                }
+            }
+
+            // 2. Cardinal WALK, STEP_UP (+1Y), DROP (-1..-3Y), and 1-3 block PARKOUR
             for (int[] d : CARDINALS) {
                 int nx = cur.x + d[0];
                 int nz = cur.z + d[1];
 
                 if (canStandAt(world, nx, cur.y, nz)) {
                     double cost = WALK_COST + voidEdgePenalty(world, nx, cur.y, nz);
-                    relax(open, visited, cur, nx, cur.y, nz, NavMoveType.WALK, cost, goalX, goalY, goalZ);
+                    relax(open, visited, cur, nx, cur.y, nz, NavMoveType.WALK, cost, goalX, snappedGoalY, goalZ);
                 } else {
-                    // STEP_UP (+1 Y)
-                    if (world.isPassable(cur.x, cur.y + 2, cur.z)
-                            && canStandAt(world, nx, cur.y + 1, nz)) {
+                    if (world.isPassable(cur.x, cur.y + 2, cur.z) && canStandAt(world, nx, cur.y + 1, nz)) {
                         double cost = STEP_UP_COST + voidEdgePenalty(world, nx, cur.y + 1, nz);
-                        relax(open, visited, cur, nx, cur.y + 1, nz, NavMoveType.STEP_UP, cost, goalX, goalY, goalZ);
+                        relax(open, visited, cur, nx, cur.y + 1, nz, NavMoveType.STEP_UP, cost, goalX, snappedGoalY, goalZ);
                     }
-                    // DROP (-1..-3 Y)
                     if (world.isPassable(nx, cur.y, nz) && world.isPassable(nx, cur.y + 1, nz)) {
                         for (int drop = 1; drop <= 3; drop++) {
                             int ly = cur.y - drop;
@@ -117,23 +132,19 @@ public final class LocalPathfinder {
                             if (world.isSolidFloor(nx, ly - 1, nz)) {
                                 double cost = DROP_BASE_COST + DROP_PER_BLOCK_COST * drop
                                         + voidEdgePenalty(world, nx, ly, nz);
-                                relax(open, visited, cur, nx, ly, nz, NavMoveType.DROP, cost, goalX, goalY, goalZ);
+                                relax(open, visited, cur, nx, ly, nz, NavMoveType.DROP, cost, goalX, snappedGoalY, goalZ);
                                 break;
                             }
                         }
                     }
-                    // PARKOUR_JUMP across 1-block gap (dist=2) or 2-block gap (dist=3)
-                    tryParkour(open, visited, world, cur, d[0], d[1], goalX, goalY, goalZ);
+                    tryParkour(open, visited, world, cur, d[0], d[1], goalX, snappedGoalY, goalZ);
                 }
             }
 
-            // 2. Diagonal WALK with strict 2-block corner clearance
+            // 3. Diagonal WALK, Diagonal STEP_UP (+1Y), and Diagonal DROP (-1..-2Y) with strict corner clearance
             for (int[] d : DIAGONALS) {
                 int nx = cur.x + d[0];
                 int nz = cur.z + d[1];
-                if (!canStandAt(world, nx, cur.y, nz)) {
-                    continue;
-                }
                 boolean sideAClear = world.isPassable(cur.x + d[0], cur.y, cur.z)
                         && world.isPassable(cur.x + d[0], cur.y + 1, cur.z);
                 boolean sideBClear = world.isPassable(cur.x, cur.y, cur.z + d[1])
@@ -141,18 +152,36 @@ public final class LocalPathfinder {
                 if (!sideAClear || !sideBClear) {
                     continue;
                 }
-                // Avoid cutting diagonally over a pure void corner when both sides have no floor
                 boolean sideAFloor = world.isSolidFloor(cur.x + d[0], cur.y - 1, cur.z);
                 boolean sideBFloor = world.isSolidFloor(cur.x, cur.y - 1, cur.z + d[1]);
-                if (!sideAFloor && !sideBFloor) {
-                    continue;
+
+                if (canStandAt(world, nx, cur.y, nz) && (sideAFloor || sideBFloor)) {
+                    double cost = DIAG_COST + voidEdgePenalty(world, nx, cur.y, nz);
+                    relax(open, visited, cur, nx, cur.y, nz, NavMoveType.DIAGONAL, cost, goalX, snappedGoalY, goalZ);
+                } else if (world.isPassable(cur.x, cur.y + 2, cur.z)
+                        && world.isPassable(cur.x + d[0], cur.y + 2, cur.z)
+                        && world.isPassable(cur.x, cur.y + 2, cur.z + d[1])
+                        && canStandAt(world, nx, cur.y + 1, nz)) {
+                    double cost = DIAG_STEP_UP_COST + voidEdgePenalty(world, nx, cur.y + 1, nz);
+                    relax(open, visited, cur, nx, cur.y + 1, nz, NavMoveType.STEP_UP, cost, goalX, snappedGoalY, goalZ);
+                } else if (world.isPassable(nx, cur.y, nz) && world.isPassable(nx, cur.y + 1, nz)
+                        && (sideAFloor || sideBFloor)) {
+                    for (int drop = 1; drop <= 2; drop++) {
+                        int ly = cur.y - drop;
+                        if (!world.isPassable(nx, ly, nz)) {
+                            break;
+                        }
+                        if (world.isSolidFloor(nx, ly - 1, nz)) {
+                            double cost = DROP_BASE_COST + 1.5 + DROP_PER_BLOCK_COST * drop
+                                    + voidEdgePenalty(world, nx, ly, nz);
+                            relax(open, visited, cur, nx, ly, nz, NavMoveType.DROP, cost, goalX, snappedGoalY, goalZ);
+                            break;
+                        }
+                    }
                 }
-                double cost = DIAG_COST + voidEdgePenalty(world, nx, cur.y, nz);
-                relax(open, visited, cur, nx, cur.y, nz, NavMoveType.DIAGONAL, cost, goalX, goalY, goalZ);
             }
         }
 
-        // If we expanded the search budget without reaching goal, only return partial if we made meaningful progress
         if (expanded >= maxExpansions && bestPartial != start) {
             List<NavStep> raw = reconstruct(bestPartial, world);
             return new NavPath(smoothFlatCorridor(raw, world), false, true, expanded);
@@ -167,26 +196,26 @@ public final class LocalPathfinder {
             Node cur, int dx, int dz,
             int goalX, int goalY, int goalZ) {
 
-        // Must have takeoff ceiling clearance
         if (!world.isPassable(cur.x, cur.y + 2, cur.z)) {
             return;
         }
-        // First gap cell must be empty floor (an actual gap) and clear for the jump arc
         int gx1 = cur.x + dx;
         int gz1 = cur.z + dz;
-        if (world.isSolidFloor(gx1, cur.y - 1, gz1)) {
-            return;
-        }
-        if (!isJumpArcClear(world, gx1, cur.y, gz1)) {
+        if (world.isSolidFloor(gx1, cur.y - 1, gz1) || !isJumpArcClear(world, gx1, cur.y, gz1)) {
             return;
         }
 
-        // 1-block gap (landing at dist=2, same Y or Y-1)
+        // 1-block gap (dist=2): same Y, Y-1, or +1Y ascending parkour
         int lx2 = cur.x + dx * 2;
         int lz2 = cur.z + dz * 2;
         if (canStandAt(world, lx2, cur.y, lz2) && world.isPassable(lx2, cur.y + 2, lz2)) {
             relax(open, visited, cur, lx2, cur.y, lz2, NavMoveType.PARKOUR_JUMP,
                     PARKOUR_1_GAP_COST + voidEdgePenalty(world, lx2, cur.y, lz2), goalX, goalY, goalZ);
+            return;
+        }
+        if (canStandAt(world, lx2, cur.y + 1, lz2) && world.isPassable(gx1, cur.y + 3, gz1)) {
+            relax(open, visited, cur, lx2, cur.y + 1, lz2, NavMoveType.PARKOUR_JUMP,
+                    PARKOUR_1_GAP_COST + 2.5 + voidEdgePenalty(world, lx2, cur.y + 1, lz2), goalX, goalY, goalZ);
             return;
         }
         if (canStandAt(world, lx2, cur.y - 1, lz2) && world.isPassable(lx2, cur.y + 1, lz2)) {
@@ -195,7 +224,7 @@ public final class LocalPathfinder {
             return;
         }
 
-        // 2-block gap (landing at dist=3, same Y or Y-1)
+        // 2-block gap (dist=3): same Y or Y-1
         if (!isJumpArcClear(world, lx2, cur.y, lz2)) {
             return;
         }
@@ -204,9 +233,26 @@ public final class LocalPathfinder {
         if (canStandAt(world, lx3, cur.y, lz3) && world.isPassable(lx3, cur.y + 2, lz3)) {
             relax(open, visited, cur, lx3, cur.y, lz3, NavMoveType.PARKOUR_JUMP,
                     PARKOUR_2_GAP_COST + voidEdgePenalty(world, lx3, cur.y, lz3), goalX, goalY, goalZ);
-        } else if (canStandAt(world, lx3, cur.y - 1, lz3) && world.isPassable(lx3, cur.y + 1, lz3)) {
+            return;
+        }
+        if (canStandAt(world, lx3, cur.y - 1, lz3) && world.isPassable(lx3, cur.y + 1, lz3)) {
             relax(open, visited, cur, lx3, cur.y - 1, lz3, NavMoveType.PARKOUR_JUMP,
                     PARKOUR_2_GAP_COST + 1.0 + voidEdgePenalty(world, lx3, cur.y - 1, lz3), goalX, goalY, goalZ);
+            return;
+        }
+
+        // 3-block sprint-jump gap (dist=4): same Y or Y-1
+        if (!isJumpArcClear(world, lx3, cur.y, lz3)) {
+            return;
+        }
+        int lx4 = cur.x + dx * 4;
+        int lz4 = cur.z + dz * 4;
+        if (canStandAt(world, lx4, cur.y, lz4) && world.isPassable(lx4, cur.y + 2, lz4)) {
+            relax(open, visited, cur, lx4, cur.y, lz4, NavMoveType.PARKOUR_JUMP,
+                    PARKOUR_3_GAP_COST + voidEdgePenalty(world, lx4, cur.y, lz4), goalX, goalY, goalZ);
+        } else if (canStandAt(world, lx4, cur.y - 1, lz4) && world.isPassable(lx4, cur.y + 1, lz4)) {
+            relax(open, visited, cur, lx4, cur.y - 1, lz4, NavMoveType.PARKOUR_JUMP,
+                    PARKOUR_3_GAP_COST + 1.0 + voidEdgePenalty(world, lx4, cur.y - 1, lz4), goalX, goalY, goalZ);
         }
     }
 
@@ -214,8 +260,8 @@ public final class LocalPathfinder {
         return world.isPassable(x, y, z) && world.isPassable(x, y + 1, z) && world.isPassable(x, y + 2, z);
     }
 
-    private static boolean canStandAt(VoxelNavWorld world, int x, int y, int z) {
-        return world.isSolidFloor(x, y - 1, z)
+    public static boolean canStandAt(VoxelNavWorld world, int x, int y, int z) {
+        return (world.isSolidFloor(x, y - 1, z) || world.isClimbable(x, y, z))
                 && world.isPassable(x, y, z)
                 && world.isPassable(x, y + 1, z);
     }
@@ -256,10 +302,6 @@ public final class LocalPathfinder {
         open.add(next);
     }
 
-    /**
-     * Swept flat-corridor string pulling: collapses consecutive same-Y WALK/DIAGONAL steps
-     * into direct straight waypoints whenever the full 0.35m swept corridor has solid floor and 2-block headroom.
-     */
     public static List<NavStep> smoothFlatCorridor(List<NavStep> raw, VoxelNavWorld world) {
         if (raw == null || raw.size() <= 2) {
             return raw == null ? List.of() : raw;
@@ -306,7 +348,6 @@ public final class LocalPathfinder {
     }
 
     private static boolean hasVoidEdgeInSegment(List<NavStep> raw, int fromIdx, int toIdx, VoxelNavWorld world) {
-        // Check interior nodes (excluding endpoints) — if A* stepped inward off a void cliff, don't pull back onto it
         for (int k = fromIdx + 1; k < toIdx; k++) {
             NavStep s = raw.get(k);
             if (voidEdgePenalty(world, s.x(), s.y(), s.z()) > 0.0) {
@@ -326,7 +367,6 @@ public final class LocalPathfinder {
         if (dist < 0.01) {
             return true;
         }
-        // Full 0.45m AABB clearance (0.30m player half-width + 0.15m margin) prevents snagging on 1-wide doorways
         double r = 0.45;
         int samples = Math.max(2, (int) Math.ceil(dist / 0.20));
         for (int s = 1; s < samples; s++) {

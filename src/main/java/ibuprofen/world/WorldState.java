@@ -231,8 +231,8 @@ public final class WorldState {
         // 4. Single-pass entity + true-velocity + gear + inventory snapshot
         snapshot.update(level, player, matchState, tickCount);
 
-        // 5. Feed generator holograms into MatchState, MapCore, and MatchMemory clocks
-        feedGeneratorHolograms(nowMs, matchMemory);
+        // 5. Feed generator holograms into MatchState, MapCore (ground-snapped), and MatchMemory clocks
+        feedGeneratorHolograms(level, nowMs, matchMemory);
 
         // 6. Register discovered shopkeepers in mapCore
         for (TickSnapshot.ShopKeeperInfo sk : snapshot.shopKeepers) {
@@ -333,18 +333,20 @@ public final class WorldState {
         }
     }
 
-    private void feedGeneratorHolograms(long nowMs, MatchMemory matchMemory) {
+    private void feedGeneratorHolograms(ClientLevel level, long nowMs, MatchMemory matchMemory) {
         if (snapshot.holograms.isEmpty()) {
             return;
         }
         for (TickSnapshot.HologramInfo h : snapshot.holograms) {
             if (h.lowerText.contains("diamond")) {
+                int floorY = snapHologramToFloorY(level, h.pos);
                 matchState.onGeneratorHologram(h.pos.getX(), h.pos.getZ(), GenType.DIAMOND, h.text, nowMs);
-                mapCore.ensureGeneratorIndexed(GenType.DIAMOND, h.pos.getX(), h.pos.getY(), h.pos.getZ(), "DIAMOND");
+                mapCore.ensureGeneratorIndexed(GenType.DIAMOND, h.pos.getX(), floorY, h.pos.getZ(), "DIAMOND");
                 recordGenClockIfTimer(GenType.DIAMOND, h, nowMs, matchMemory);
             } else if (h.lowerText.contains("emerald")) {
+                int floorY = snapHologramToFloorY(level, h.pos);
                 matchState.onGeneratorHologram(h.pos.getX(), h.pos.getZ(), GenType.EMERALD, h.text, nowMs);
-                mapCore.ensureGeneratorIndexed(GenType.EMERALD, h.pos.getX(), h.pos.getY(), h.pos.getZ(), "EMERALD");
+                mapCore.ensureGeneratorIndexed(GenType.EMERALD, h.pos.getX(), floorY, h.pos.getZ(), "EMERALD");
                 recordGenClockIfTimer(GenType.EMERALD, h, nowMs, matchMemory);
             }
         }
@@ -378,6 +380,21 @@ public final class WorldState {
                 recordGenClockIfTimer(bestType, h, nowMs, matchMemory);
             }
         }
+    }
+
+    private static int snapHologramToFloorY(ClientLevel level, BlockPos holoPos) {
+        if (level == null || holoPos == null) {
+            return holoPos != null ? holoPos.getY() : 64;
+        }
+        BlockPos.MutableBlockPos mut = new BlockPos.MutableBlockPos(holoPos.getX(), holoPos.getY(), holoPos.getZ());
+        for (int dy = 1; dy <= 6; dy++) {
+            mut.setY(holoPos.getY() - dy);
+            BlockState st = level.getBlockState(mut);
+            if (!st.isAir() && st.getFluidState().isEmpty() && !st.getCollisionShape(level, mut).isEmpty()) {
+                return mut.getY() + 1;
+            }
+        }
+        return holoPos.getY();
     }
 
     private static void recordGenClockIfTimer(GenType type, TickSnapshot.HologramInfo h, long nowMs, MatchMemory mem) {

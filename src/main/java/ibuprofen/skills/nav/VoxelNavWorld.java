@@ -14,29 +14,18 @@ import net.minecraft.world.phys.shapes.VoxelShape;
  */
 public interface VoxelNavWorld {
 
-    /**
-     * True if a player's feet or head can occupy block cell (x, y, z) without colliding or taking hazard damage.
-     */
     boolean isPassable(int x, int y, int z);
 
-    /**
-     * True if block cell (x, y, z) provides walkable solid support (not void, not lava, not 1.5-tall fence).
-     */
     boolean isSolidFloor(int x, int y, int z);
 
-    /**
-     * True if block cell (x, y, z) is hazardous (lava, fire, magma, cobweb).
-     */
     boolean isHazard(int x, int y, int z);
 
-    /**
-     * Exact world Y coordinate of the top walkable surface of floor cell (x, y, z) (e.g., y+0.5 for bottom slab).
-     */
     double floorTopY(int x, int y, int z);
 
-    /**
-     * True if stepping off into (x, y, z) drops into void or a lethal (>5 block) fall.
-     */
+    default boolean isClimbable(int x, int y, int z) {
+        return false;
+    }
+
     default boolean isVoidBelow(int x, int y, int z) {
         for (int dy = 0; dy <= 5; dy++) {
             if (isSolidFloor(x, y - dy, z)) {
@@ -47,8 +36,53 @@ public interface VoxelNavWorld {
     }
 
     /**
-     * Live Minecraft 26.3 ClientLevel implementation using exact VoxelShape collision bounds.
+     * Snaps a floating POI coordinate (like a Diamond/Emerald hologram 3 blocks in the air)
+     * down to the closest walkable feet Y cell within 6 blocks below.
      */
+    default int snapToWalkableY(int x, int y, int z) {
+        if (isSolidFloor(x, y - 1, z) && isPassable(x, y, z) && isPassable(x, y + 1, z)) {
+            return y;
+        }
+        for (int dy = 1; dy <= 6; dy++) {
+            int cy = y - dy;
+            if (isSolidFloor(x, cy - 1, z) && isPassable(x, cy, z) && isPassable(x, cy + 1, z)) {
+                return cy;
+            }
+        }
+        // Also check 1-2 blocks above in case the goal is embedded in a floor block (like clicking a floor)
+        for (int dy = 1; dy <= 2; dy++) {
+            int cy = y + dy;
+            if (isSolidFloor(x, cy - 1, z) && isPassable(x, cy, z) && isPassable(x, cy + 1, z)) {
+                return cy;
+            }
+        }
+        return y;
+    }
+
+    /**
+     * Simple voxel line-of-sight check between two 3D points (used to prevent picking shop stances behind walls).
+     */
+    default boolean hasLineOfSight(double x0, double y0, double z0, double x1, double y1, double z1) {
+        double dx = x1 - x0;
+        double dy = y1 - y0;
+        double dz = z1 - z0;
+        double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist < 0.1) {
+            return true;
+        }
+        int steps = Math.max(2, (int) Math.ceil(dist / 0.25));
+        for (int i = 1; i < steps; i++) {
+            double t = (double) i / steps;
+            int bx = (int) Math.floor(x0 + dx * t);
+            int by = (int) Math.floor(y0 + dy * t);
+            int bz = (int) Math.floor(z0 + dz * t);
+            if (!isPassable(bx, by, bz)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     static VoxelNavWorld fromClientLevel(ClientLevel level) {
         return new ClientLevelNavWorld(level);
     }
@@ -74,6 +108,10 @@ public interface VoxelNavWorld {
             if (state.isAir()) {
                 return true;
             }
+            Block b = state.getBlock();
+            if (b == Blocks.LADDER || b == Blocks.VINE) {
+                return true;
+            }
             if (!state.getFluidState().isEmpty()) {
                 return false;
             }
@@ -96,8 +134,16 @@ public interface VoxelNavWorld {
                 return false;
             }
             double top = shape.max(Direction.Axis.Y);
-            // Reject fences/walls (height 1.5) as normal floors and reject ultra-thin carpets (<= 0.15)
             return top > 0.15 && top <= 1.05;
+        }
+
+        @Override
+        public boolean isClimbable(int x, int y, int z) {
+            if (level == null || !level.hasChunk(x >> 4, z >> 4)) {
+                return false;
+            }
+            Block b = level.getBlockState(mut.set(x, y, z)).getBlock();
+            return b == Blocks.LADDER || b == Blocks.VINE;
         }
 
         @Override

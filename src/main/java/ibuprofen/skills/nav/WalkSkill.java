@@ -19,9 +19,10 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Layer 2 Island Navigation Skill (Phase 1).
- * Walks smoothly along a {@link LocalPathfinder} path using ONLY {@code MOVEMENT} and {@code LOOK}
- * channels so higher-priority skills (healing, combat) can compose alongside walking.
+ * Layer 2 Humanized Island Navigation Skill (Phase 1).
+ * Uses pure-pursuit continuous lookahead steering, MouseModel GCD aim, and KeyboardModel
+ * octant-decoupled WASD so movement looks natural rather than robotic grid-snapping.
+ * Owns ONLY {@code MOVEMENT} and {@code LOOK} channels so other skills compose freely.
  */
 public final class WalkSkill implements Skill {
 
@@ -29,13 +30,14 @@ public final class WalkSkill implements Skill {
     private static final double STUCK_MIN_DIST_SQ = 0.25 * 0.25;
     private static final int MAX_REPLANS = 3;
 
-    private final int goalX, goalY, goalZ;
+    private final int rawGoalX, rawGoalY, rawGoalZ;
+    private int goalX, goalY, goalZ;
     private final double arrivalRadius;
     private final String label;
     private final KeyboardModel keyboard = new KeyboardModel();
 
-    private List<NavStep> steps = List.of();
-    private int stepIndex = 0;
+    private volatile List<NavStep> steps = List.of();
+    private volatile int stepIndex = 0;
     private int replans = 0;
     private int elapsedTicks = 0;
     private int timeoutTicks = 240;
@@ -45,6 +47,9 @@ public final class WalkSkill implements Skill {
     private int stuckTicks = 0;
 
     public WalkSkill(int goalX, int goalY, int goalZ, double arrivalRadius, String label) {
+        this.rawGoalX = goalX;
+        this.rawGoalY = goalY;
+        this.rawGoalZ = goalZ;
         this.goalX = goalX;
         this.goalY = goalY;
         this.goalZ = goalZ;
@@ -55,6 +60,26 @@ public final class WalkSkill implements Skill {
     @Override
     public String name() {
         return "WalkSkill(" + label + ")";
+    }
+
+    public List<NavStep> activeSteps() {
+        return steps;
+    }
+
+    public int currentStepIndex() {
+        return stepIndex;
+    }
+
+    public int goalX() {
+        return goalX;
+    }
+
+    public int goalY() {
+        return goalY;
+    }
+
+    public int goalZ() {
+        return goalZ;
     }
 
     @Override
@@ -73,8 +98,11 @@ public final class WalkSkill implements Skill {
 
         if (!initialized) {
             initialized = true;
+            this.goalX = rawGoalX;
+            this.goalY = navWorld.snapToWalkableY(rawGoalX, rawGoalY, rawGoalZ);
+            this.goalZ = rawGoalZ;
             double dist = Math.hypot(player.getX() - (goalX + 0.5), player.getZ() - (goalZ + 0.5));
-            timeoutTicks = Math.max(120, (int) Math.ceil(dist * 14.0) + 60);
+            timeoutTicks = Math.max(140, (int) Math.ceil(dist * 15.0) + 80);
             resetStuckAnchor(player);
             if (!planFromPlayer(navWorld, player)) {
                 return SkillResult.blocked("unreachable_target");
@@ -90,7 +118,7 @@ public final class WalkSkill implements Skill {
         double goalDx = (goalX + 0.5) - player.getX();
         double goalDy = goalY - player.getY();
         double goalDz = (goalZ + 0.5) - player.getZ();
-        if (goalDx * goalDx + goalDz * goalDz <= arrivalRadius * arrivalRadius && Math.abs(goalDy) <= 1.6) {
+        if (goalDx * goalDx + goalDz * goalDz <= arrivalRadius * arrivalRadius && Math.abs(goalDy) <= 1.8) {
             return SkillResult.done("arrived");
         }
 
@@ -101,13 +129,14 @@ public final class WalkSkill implements Skill {
             replans++;
         }
 
-        // Advance past waypoints we already reached
+        // Advance past reached waypoints
         while (stepIndex < steps.size()) {
             NavStep s = steps.get(stepIndex);
             double dx = s.centerX() - player.getX();
             double dz = s.centerZ() - player.getZ();
             double dy = Math.abs(s.y() - player.getY());
-            double tol = (s.moveType() == NavMoveType.PARKOUR_JUMP) ? 0.50 : 0.62;
+            double tol = (s.moveType() == NavMoveType.PARKOUR_JUMP || s.moveType() == NavMoveType.LADDER_UP)
+                    ? 0.48 : 0.65;
             if (dx * dx + dz * dz <= tol * tol && dy <= 0.95) {
                 stepIndex++;
             } else {
@@ -116,8 +145,7 @@ public final class WalkSkill implements Skill {
         }
 
         if (stepIndex >= steps.size()) {
-            // Re-check arrival or replan if final partial path ended before goal
-            if (goalDx * goalDx + goalDz * goalDz <= arrivalRadius * arrivalRadius && Math.abs(goalDy) <= 1.6) {
+            if (goalDx * goalDx + goalDz * goalDz <= arrivalRadius * arrivalRadius && Math.abs(goalDy) <= 1.8) {
                 return SkillResult.done("arrived");
             }
             if (replans >= MAX_REPLANS || !planFromPlayer(navWorld, player)) {
@@ -128,12 +156,10 @@ public final class WalkSkill implements Skill {
 
         NavStep current = steps.get(stepIndex);
 
-        // Void / fall safety abort
-        if (player.getY() < current.y() - 4.5) {
+        if (player.getY() < current.y() - 4.8) {
             return SkillResult.interrupted("fell_off_path");
         }
 
-        // Stuck watchdog -> immediate A* replan
         if (checkStuck(player)) {
             if (replans >= MAX_REPLANS) {
                 return SkillResult.blocked("stuck_max_replans");
@@ -145,32 +171,35 @@ public final class WalkSkill implements Skill {
             current = steps.get(Math.min(stepIndex, steps.size() - 1));
         }
 
-        // Compute desired yaw toward current waypoint (or look slightly ahead for smooth curves)
-        NavStep lookTarget = (stepIndex + 1 < steps.size()
-                && current.moveType() != NavMoveType.PARKOUR_JUMP
-                && Math.hypot(current.centerX() - player.getX(), current.centerZ() - player.getZ()) < 1.3)
+        // Pure-pursuit continuous lookahead point so turns feel fluid & human rather than robotic 90-degree snaps
+        double[] steerPt = computeLookaheadPoint(player, current, navWorld);
+        float moveYaw = computeYawTo(player.getX(), player.getZ(), steerPt[0], steerPt[1]);
+
+        NavStep gazeStep = (stepIndex + 1 < steps.size() && isFlatMove(current.moveType()))
                 ? steps.get(stepIndex + 1)
                 : current;
-
-        float moveYaw = computeYawTo(player.getX(), player.getZ(), current.centerX(), current.centerZ());
-        float lookYaw = computeYawTo(player.getX(), player.getZ(), lookTarget.centerX(), lookTarget.centerZ());
-        float lookPitch = (current.moveType() == NavMoveType.DROP) ? 16.0f : 8.0f;
+        float lookYaw = computeYawTo(player.getX(), player.getZ(), gazeStep.centerX(), gazeStep.centerZ());
+        float lookPitch = switch (current.moveType()) {
+            case DROP -> 16.0f;
+            case LADDER_UP -> -28.0f;
+            case STEP_UP -> 2.0f;
+            default -> 8.0f;
+        };
 
         arbiter.request(ChannelRequest.look(
                 name(), ChannelRequest.PRIORITY_NORMAL, "walk_steer",
                 new Rotation(lookYaw, lookPitch), false));
 
-        // Build raw movement intent and pass through salvaged KeyboardModel for smooth WASD + sprint-cone
         EnumMap<BodyInput, Boolean> rawKeys = new EnumMap<>(BodyInput.class);
         rawKeys.put(BodyInput.MOVE_FORWARD, true);
 
-        boolean sharpTurnNearVoid = isSharpTurnNearVoid(navWorld, player, current, lookTarget);
-        boolean wantsSprint = !sharpTurnNearVoid
-                && Math.abs(Rotation.normalizeYaw(moveYaw - player.getYRot())) < 42.0f;
+        boolean sharpTurnNearVoid = isSharpTurnNearVoid(navWorld, player, current, gazeStep);
+        boolean wantsSprint = current.moveType() != NavMoveType.LADDER_UP
+                && current.moveType() != NavMoveType.LADDER_DOWN
+                && !sharpTurnNearVoid
+                && Math.abs(Rotation.normalizeYaw(moveYaw - player.getYRot())) < 44.0f;
         rawKeys.put(BodyInput.SPRINT, wantsSprint);
-
-        boolean wantsJump = shouldJump(player, current);
-        rawKeys.put(BodyInput.JUMP, wantsJump);
+        rawKeys.put(BodyInput.JUMP, shouldJump(player, current));
 
         keyboard.setDesiredMoveYaw(moveYaw);
         Map<BodyInput, Boolean> humanKeys = keyboard.step(rawKeys, player.getYRot(), arbiter.profile());
@@ -185,6 +214,25 @@ public final class WalkSkill implements Skill {
         keyboard.reset();
         steps = List.of();
         stepIndex = 0;
+    }
+
+    private double[] computeLookaheadPoint(LocalPlayer player, NavStep current, VoxelNavWorld world) {
+        if (!isFlatMove(current.moveType()) || stepIndex + 1 >= steps.size()) {
+            return new double[]{current.centerX(), current.centerZ()};
+        }
+        NavStep next = steps.get(stepIndex + 1);
+        if (!isFlatMove(next.moveType()) || next.y() != current.y()) {
+            return new double[]{current.centerX(), current.centerZ()};
+        }
+        double distToCur = Math.hypot(current.centerX() - player.getX(), current.centerZ() - player.getZ());
+        // Only blend toward next waypoint when close to current AND corridor has no void edge hazard
+        if (distToCur < 1.15 && !isAdjacentVoid(world, current.x(), current.y(), current.z())) {
+            double blend = Math.max(0.0, Math.min(0.45, (1.15 - distToCur) * 0.45));
+            double tx = current.centerX() + (next.centerX() - current.centerX()) * blend;
+            double tz = current.centerZ() + (next.centerZ() - current.centerZ()) * blend;
+            return new double[]{tx, tz};
+        }
+        return new double[]{current.centerX(), current.centerZ()};
     }
 
     private boolean planFromPlayer(VoxelNavWorld navWorld, LocalPlayer player) {
@@ -205,19 +253,31 @@ public final class WalkSkill implements Skill {
     }
 
     private boolean shouldJump(LocalPlayer player, NavStep step) {
+        if (step.moveType() == NavMoveType.LADDER_UP) {
+            return true;
+        }
         if (!player.onGround()) {
             return false;
         }
         double distXZ = Math.hypot(step.centerX() - player.getX(), step.centerZ() - player.getZ());
         if (step.moveType() == NavMoveType.STEP_UP) {
-            // Only jump if step height exceeds Minecraft's 0.6 auto-step (slabs walk up without jumping)
-            return (step.targetTopY() - player.getY()) > 0.60 && distXZ <= 1.65;
+            return (step.targetTopY() - player.getY()) > 0.60 && distXZ <= 1.75;
         }
         if (step.moveType() == NavMoveType.PARKOUR_JUMP) {
-            // Jump right before leaving the takeoff block edge
-            return distXZ >= 1.55 && distXZ <= 3.15;
+            return distXZ >= 1.55 && distXZ <= 4.15;
         }
         return false;
+    }
+
+    private static boolean isFlatMove(NavMoveType m) {
+        return m == NavMoveType.WALK || m == NavMoveType.DIAGONAL;
+    }
+
+    private static boolean isAdjacentVoid(VoxelNavWorld world, int x, int y, int z) {
+        return world.isVoidBelow(x + 1, y - 1, z)
+                || world.isVoidBelow(x - 1, y - 1, z)
+                || world.isVoidBelow(x, y - 1, z + 1)
+                || world.isVoidBelow(x, y - 1, z - 1);
     }
 
     private static boolean isSharpTurnNearVoid(VoxelNavWorld world, LocalPlayer player, NavStep cur, NavStep next) {
@@ -229,10 +289,7 @@ public final class WalkSkill implements Skill {
         if (Math.abs(Rotation.normalizeYaw(yaw2 - yaw1)) < 55.0f) {
             return false;
         }
-        return world.isVoidBelow(cur.x() + 1, cur.y() - 1, cur.z())
-                || world.isVoidBelow(cur.x() - 1, cur.y() - 1, cur.z())
-                || world.isVoidBelow(cur.x(), cur.y() - 1, cur.z() + 1)
-                || world.isVoidBelow(cur.x(), cur.y() - 1, cur.z() - 1);
+        return isAdjacentVoid(world, cur.x(), cur.y(), cur.z());
     }
 
     private boolean checkStuck(LocalPlayer player) {

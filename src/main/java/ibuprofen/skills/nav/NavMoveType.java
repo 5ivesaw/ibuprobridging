@@ -8,5 +8,7 @@ public enum NavMoveType {
     DIAGONAL,
     STEP_UP,
     DROP,
-    PARKOUR_JUMP
+    PARKOUR_JUMP,
+    LADDER_UP,
+    LADDER_DOWN
 }

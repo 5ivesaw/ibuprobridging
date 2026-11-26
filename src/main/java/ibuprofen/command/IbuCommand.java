@@ -6,8 +6,11 @@ import ibuprofen.memory.MatchMemory;
 import ibuprofen.memory.ShoppingWishList;
 import ibuprofen.memory.TeamDossier;
 import ibuprofen.motor.InputArbiter;
+import ibuprofen.skills.nav.ShopStanceFinder;
+import ibuprofen.skills.nav.VoxelNavWorld;
 import ibuprofen.skills.nav.WalkSkill;
 import ibuprofen.telemetry.DebugRecorder;
+import ibuprofen.ui.IbuMenuScreen;
 import ibuprofen.world.BedwarsMapCore;
 import ibuprofen.world.BedwarsMapCore.BedPOI;
 import ibuprofen.world.BedwarsMapCore.GenPOI;
@@ -48,6 +51,12 @@ public final class IbuCommand {
         switch (sub) {
             case "status" -> showStatus(mod);
             case "mem", "memory" -> showMemory(mod);
+            case "menu", "gui" -> {
+                Minecraft mc = Minecraft.getInstance();
+                if (mc != null) {
+                    mc.gui.setScreen(new IbuMenuScreen());
+                }
+            }
             case "test" -> handleTest(mod, parts);
             case "stop" -> {
                 mod.stopActiveSkill("manual_stop");
@@ -78,35 +87,45 @@ public final class IbuCommand {
         }
         if (parts.length == 5) {
             try {
-                int x = Integer.parseInt(parts[2]);
-                int y = Integer.parseInt(parts[3]);
-                int z = Integer.parseInt(parts[4]);
+                int x = (int) Math.floor(Double.parseDouble(parts[2]));
+                int y = (int) Math.floor(Double.parseDouble(parts[3]));
+                int z = (int) Math.floor(Double.parseDouble(parts[4]));
                 mod.startSkill(new WalkSkill(x, y, z, 0.85, x + "," + y + "," + z));
                 say("Walking to (" + x + ", " + y + ", " + z + ")...");
             } catch (NumberFormatException e) {
-                say("Invalid coords. Use integers: #ibu test walk <x> <y> <z>");
+                say("Invalid coords. Example: #ibu test walk 60 82 67");
             }
             return;
         }
         String target = parts.length >= 3 ? parts[2].toLowerCase(Locale.ROOT) : "shop";
         BedwarsMapCore map = mod.worldState().mapCore();
         TickSnapshot snap = mod.worldState().snapshot();
+        VoxelNavWorld navWorld = mc.level != null ? VoxelNavWorld.fromClientLevel(mc.level) : null;
 
         switch (target) {
             case "shop" -> {
+                // Prefer known ITEM_SHOP/UPGRADES within 48 blocks over distant or unknown NPCs
                 TickSnapshot.ShopKeeperInfo liveShop = snap.shopKeepers.stream()
-                        .min(Comparator.comparingDouble(s -> s.distSq)).orElse(null);
+                        .filter(s -> s.distSq <= 48.0 * 48.0)
+                        .min(Comparator.comparingInt((TickSnapshot.ShopKeeperInfo s) -> "UNKNOWN".equals(s.role) ? 1 : 0)
+                                .thenComparingDouble(s -> s.distSq))
+                        .orElse(null);
                 if (liveShop != null) {
-                    mod.startSkill(new WalkSkill(
-                            liveShop.pos.getX(), liveShop.pos.getY(), liveShop.pos.getZ(), 2.2, "shop"));
-                    say("Walking to nearest shopkeeper (" + liveShop.role + ")...");
+                    ShopStanceFinder.Stance stance = ShopStanceFinder.findBestStance(
+                            navWorld, liveShop.pos.getX(), liveShop.pos.getY(), liveShop.pos.getZ(),
+                            p.getX(), p.getY(), p.getZ());
+                    mod.startSkill(new WalkSkill(stance.x(), stance.y(), stance.z(), 0.9, "shop"));
+                    say("Walking to " + liveShop.role + " stance (" + stance.x() + "," + stance.y() + "," + stance.z() + ")...");
                     return;
                 }
                 ShopNPC cached = map.getShopNpcs().stream()
                         .min(Comparator.comparingDouble(s -> distSq(p, s.x(), s.y(), s.z()))).orElse(null);
                 if (cached != null) {
-                    mod.startSkill(new WalkSkill(cached.x(), cached.y(), cached.z(), 2.2, "shop"));
-                    say("Walking to remembered shopkeeper at (" + cached.x() + "," + cached.y() + "," + cached.z() + ")...");
+                    ShopStanceFinder.Stance stance = ShopStanceFinder.findBestStance(
+                            navWorld, cached.x(), cached.y(), cached.z(),
+                            p.getX(), p.getY(), p.getZ());
+                    mod.startSkill(new WalkSkill(stance.x(), stance.y(), stance.z(), 0.9, "shop"));
+                    say("Walking to remembered shop stance (" + stance.x() + "," + stance.y() + "," + stance.z() + ")...");
                 } else {
                     say("No shopkeeper discovered yet.");
                 }
@@ -115,8 +134,9 @@ public final class IbuCommand {
                 GenPOI gen = map.getGens().stream()
                         .min(Comparator.comparingDouble(g -> distSq(p, g.x(), g.y(), g.z()))).orElse(null);
                 if (gen != null) {
-                    mod.startSkill(new WalkSkill(gen.x(), gen.y(), gen.z(), 1.2, gen.type().name()));
-                    say("Walking to nearest " + gen.type() + " generator...");
+                    int fy = navWorld != null ? navWorld.snapToWalkableY(gen.x(), gen.y(), gen.z()) : gen.y();
+                    mod.startSkill(new WalkSkill(gen.x(), fy, gen.z(), 1.35, gen.type().name()));
+                    say("Walking to nearest " + gen.type() + " generator (" + gen.x() + "," + fy + "," + gen.z() + ")...");
                 } else {
                     say("No Diamond/Emerald generator discovered yet.");
                 }
