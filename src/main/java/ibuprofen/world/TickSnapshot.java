@@ -9,6 +9,7 @@ import net.minecraft.world.entity.Display;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.monster.Blaze;
 import net.minecraft.world.entity.npc.villager.Villager;
 import net.minecraft.world.entity.npc.wanderingtrader.WanderingTrader;
 import net.minecraft.world.entity.player.Player;
@@ -24,7 +25,8 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Single-pass per-tick snapshot of entities, true position-delta velocities, and player resources.
+ * Single-pass per-tick snapshot of entities, true position-delta EMA velocities (both ground and air),
+ * last-seen enemy memory, hologram-paired shopkeepers, and player resources.
  * No other class in Ibuprofen is allowed to sweep {@code level.entitiesForRendering()}.
  */
 public final class TickSnapshot {
@@ -61,27 +63,35 @@ public final class TickSnapshot {
         }
     }
 
+    public record LastSeenEnemy(String name, double x, double y, double z, double vx, double vz, long lastSeenTick) {}
+
     public static final class ShopKeeperInfo {
         public final int entityId;
         public final BlockPos pos;
-        public final boolean isUpgrades;
+        public final String role; // "ITEM_SHOP", "UPGRADES", or "UNKNOWN"
         public final double distSq;
 
-        public ShopKeeperInfo(int entityId, BlockPos pos, boolean isUpgrades, double distSq) {
+        public ShopKeeperInfo(int entityId, BlockPos pos, String role, double distSq) {
             this.entityId = entityId;
             this.pos = pos;
-            this.isUpgrades = isUpgrades;
+            this.role = role;
             this.distSq = distSq;
         }
     }
 
     public static final class HologramInfo {
+        public final double x, y, z;
         public final BlockPos pos;
         public final String text;
+        public final String lowerText;
 
-        public HologramInfo(BlockPos pos, String text) {
+        public HologramInfo(double x, double y, double z, BlockPos pos, String text) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
             this.pos = pos;
             this.text = text;
+            this.lowerText = text.toLowerCase(Locale.ROOT);
         }
     }
 
@@ -93,8 +103,10 @@ public final class TickSnapshot {
 
     private static final double VEL_EMA_ALPHA = 0.55;
     private static final long STALE_VEL_TICKS = 100L;
+    private static final long STALE_LAST_SEEN_TICKS = 360L; // 18 seconds
 
     private final Map<Integer, VelSample> velHistory = new HashMap<>();
+    public final Map<String, LastSeenEnemy> lastSeenEnemies = new HashMap<>();
 
     public final List<TrackedPlayer> enemies = new ArrayList<>();
     public final List<TrackedPlayer> teammates = new ArrayList<>();
@@ -113,6 +125,7 @@ public final class TickSnapshot {
 
     public void clear() {
         velHistory.clear();
+        lastSeenEnemies.clear();
         resetLists();
     }
 
@@ -165,6 +178,7 @@ public final class TickSnapshot {
         double sz = self.getZ();
         double bestEnemyDistSq = Double.MAX_VALUE;
         TeamColor myTeam = matchState != null ? matchState.getHomeTeam() : TeamColor.UNKNOWN;
+        List<Entity> rawShopCandidates = new ArrayList<>(8);
 
         for (Entity e : level.entitiesForRendering()) {
             if (e == null || e == self || !e.isAlive()) {
@@ -180,11 +194,11 @@ public final class TickSnapshot {
                     continue;
                 }
                 String name = other.getName().getString();
-                if (name == null || name.isBlank() || name.startsWith("CIT-") || name.contains("[NPC]")) {
-                    // Server NPC player entity (often used for Hypixel/Pika shopkeepers)
+                if (name == null || name.isBlank() || name.startsWith("CIT-") || name.contains("[NPC]")
+                        || (other.getUUID().version() == 2)) {
+                    // Server NPC player entity (Hypixel/Pika Citizens NPCs often use UUID v2)
                     if (dSq < 64.0 * 64.0) {
-                        boolean isUpgrades = name != null && name.toLowerCase(Locale.ROOT).contains("upgrade");
-                        shopKeepers.add(new ShopKeeperInfo(e.getId(), e.blockPosition(), isUpgrades, dSq));
+                        rawShopCandidates.add(e);
                     }
                     continue;
                 }
@@ -199,26 +213,25 @@ public final class TickSnapshot {
                     teammates.add(tp);
                 } else {
                     enemies.add(tp);
+                    lastSeenEnemies.put(name, new LastSeenEnemy(name, ex, ey, ez, vel.emaVx, vel.emaVz, currentTick));
                     if (dSq < bestEnemyDistSq) {
                         bestEnemyDistSq = dSq;
                         nearestEnemy = tp;
                     }
                 }
-            } else if (e instanceof Villager || e instanceof WanderingTrader) {
-                String label = e.getDisplayName() != null ? e.getDisplayName().getString().toLowerCase(Locale.ROOT) : "";
-                boolean isUpgrades = label.contains("upgrade") || label.contains("team");
-                shopKeepers.add(new ShopKeeperInfo(e.getId(), e.blockPosition(), isUpgrades, dSq));
+            } else if (e instanceof Villager || e instanceof WanderingTrader || e instanceof Blaze) {
+                rawShopCandidates.add(e);
             } else if (e instanceof ArmorStand stand) {
                 if (stand.hasCustomName() && stand.getCustomName() != null) {
                     String text = stripFormatting(stand.getCustomName().getString());
                     if (!text.isBlank()) {
-                        holograms.add(new HologramInfo(stand.blockPosition(), text));
+                        holograms.add(new HologramInfo(ex, ey, ez, stand.blockPosition(), text));
                     }
                 }
             } else if (e instanceof Display.TextDisplay textDisplay) {
                 String text = textDisplay.getText() != null ? stripFormatting(textDisplay.getText().getString()) : "";
                 if (!text.isBlank()) {
-                    holograms.add(new HologramInfo(textDisplay.blockPosition(), text));
+                    holograms.add(new HologramInfo(ex, ey, ez, textDisplay.blockPosition(), text));
                 }
             } else if (e instanceof ItemEntity itemEntity) {
                 String id = BuiltInRegistries.ITEM.getKey(itemEntity.getItem().getItem()).getPath();
@@ -231,13 +244,57 @@ public final class TickSnapshot {
             }
         }
 
-        // 3. Prune stale velocity entries periodically so map never leaks
-        if ((currentTick & 31L) == 0L && !velHistory.isEmpty()) {
-            Iterator<Map.Entry<Integer, VelSample>> it = velHistory.entrySet().iterator();
-            while (it.hasNext()) {
-                if (currentTick - it.next().getValue().lastSeenTick > STALE_VEL_TICKS) {
-                    it.remove();
+        // 3. Pair shopkeeper candidates with overhead holograms ("ITEM SHOP" vs "UPGRADES")
+        for (Entity sk : rawShopCandidates) {
+            double ex = sk.getX();
+            double ey = sk.getY();
+            double ez = sk.getZ();
+            double dSq = (ex - sx) * (ex - sx) + (ey - sy) * (ey - sy) + (ez - sz) * (ez - sz);
+            String role = classifyShopRole(sk, holograms);
+            shopKeepers.add(new ShopKeeperInfo(sk.getId(), sk.blockPosition(), role, dSq));
+        }
+
+        // 4. Prune stale velocity and last-seen entries periodically
+        if ((currentTick & 31L) == 0L) {
+            pruneStale(currentTick);
+        }
+    }
+
+    private static String classifyShopRole(Entity sk, List<HologramInfo> holograms) {
+        String disp = sk.getDisplayName() != null ? sk.getDisplayName().getString().toLowerCase(Locale.ROOT) : "";
+        if (disp.contains("upgrade") || disp.contains("team") || disp.contains("trap")) {
+            return "UPGRADES";
+        }
+        if (disp.contains("item shop") || disp.contains("shop")) {
+            return "ITEM_SHOP";
+        }
+        for (HologramInfo h : holograms) {
+            double dx = h.x - sk.getX();
+            double dz = h.z - sk.getZ();
+            double dy = h.y - sk.getY();
+            if (dx * dx + dz * dz <= 4.0 && dy >= -1.0 && dy <= 4.0) {
+                if (h.lowerText.contains("upgrade") || h.lowerText.contains("team") || h.lowerText.contains("trap")) {
+                    return "UPGRADES";
                 }
+                if (h.lowerText.contains("item shop") || h.lowerText.contains("shop")) {
+                    return "ITEM_SHOP";
+                }
+            }
+        }
+        return "UNKNOWN";
+    }
+
+    private void pruneStale(long currentTick) {
+        Iterator<Map.Entry<Integer, VelSample>> vit = velHistory.entrySet().iterator();
+        while (vit.hasNext()) {
+            if (currentTick - vit.next().getValue().lastSeenTick > STALE_VEL_TICKS) {
+                vit.remove();
+            }
+        }
+        Iterator<Map.Entry<String, LastSeenEnemy>> lit = lastSeenEnemies.entrySet().iterator();
+        while (lit.hasNext()) {
+            if (currentTick - lit.next().getValue().lastSeenTick() > STALE_LAST_SEEN_TICKS) {
+                lit.remove();
             }
         }
     }
@@ -258,7 +315,6 @@ public final class TickSnapshot {
             double rawVx = (x - sample.lastX) / dt;
             double rawVy = (y - sample.lastY) / dt;
             double rawVz = (z - sample.lastZ) / dt;
-            // Clamp teleports so a respawn doesn't spike velocity
             if (Math.abs(rawVx) < 3.0 && Math.abs(rawVy) < 3.0 && Math.abs(rawVz) < 3.0) {
                 sample.emaVx = VEL_EMA_ALPHA * rawVx + (1.0 - VEL_EMA_ALPHA) * sample.emaVx;
                 sample.emaVy = VEL_EMA_ALPHA * rawVy + (1.0 - VEL_EMA_ALPHA) * sample.emaVy;
