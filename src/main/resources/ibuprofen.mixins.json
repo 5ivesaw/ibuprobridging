@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "package": "ibuprofen.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "client": [
+    "MinecraftTickMixin",
+    "ClientPacketListenerMixin",
+    "KeyboardInputMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

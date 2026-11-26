@@ -1,0 +1,26 @@
+# Gradle & Build
+.gradle/
+build/
+run/
+out/
+dist/
+*.log
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# Large raw media (never commit raw 64MB wav)
+*.wav
+*.mp4
+*.mkv
+
+# Local debug logs
+debug_logs/
+*.jsonl
+*.jsonl.gz
+.DS_Store

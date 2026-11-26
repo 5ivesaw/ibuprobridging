@@ -1,0 +1,685 @@
+/*
+ * This file is part of Baritone.
+ *
+ * Baritone is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Baritone is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with Baritone.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package ibuprofen.motor;
+
+
+
+
+/**
+ * Physics- and psychophysics-grounded human mouse model:
+ * <ul>
+ *   <li>Movement duration scaled by Fitts' law: {@code MT = a + b * log2(D / W + 1)}</li>
+ *   <li>Minimum-jerk bell-shaped velocity trajectory: {@code 10t^3 - 15t^4 + 6t^5}</li>
+ *   <li>Primary movement overshoot/undershoot on large flicks followed by corrective sub-movement</li>
+ *   <li>Smooth pursuit with lag on slowly moving targets</li>
+ *   <li>Crosshair coasting inside the inner 85% target box</li>
+ *   <li>3-stage pink-noise (1/f) drift + velocity-scaled motor tremor</li>
+ *   <li>Exact Minecraft mouse sensitivity GCD quantization</li>
+ * </ul>
+ */
+public final class MouseModel {
+
+    private final ForkableRandom rand;
+
+    // Active trajectory state
+    private boolean initialized;
+    private float currentYaw;
+    private float currentPitch;
+    private float velYaw;
+    private float velPitch;
+
+    private float startYaw;
+    private float startPitch;
+    private float primaryGoalYaw;
+    private float primaryGoalPitch;
+    private float finalGoalYaw;
+    private float finalGoalPitch;
+    private int elapsedTicks;
+    private int durationTicks;
+    private boolean hasCorrectionSubmovement;
+    private boolean inCorrectionSubmovement;
+    private double startVelYawNorm;
+    private double startVelPitchNorm;
+
+    // Smoothed target angular velocity for predictive pursuit of moving mobs/corridors
+    private boolean hasPrevDesired;
+    private float prevDesiredYaw;
+    private float prevDesiredPitch;
+    private float prevDeltaDesYaw;
+    private float prevDeltaDesPitch;
+    private float targetVelYaw;
+    private float targetVelPitch;
+
+    private static final double SQRT3 = Math.sqrt(3.0);
+    private static final double SQRT5 = Math.sqrt(5.0);
+
+    // 3-stage pink noise state (Paul Kellet filter approximation)
+    private double pinkYaw0, pinkYaw1, pinkYaw2;
+    private double pinkPitch0, pinkPitch1, pinkPitch2;
+    // Per-saccade smooth curved wrist arc (sampled ONCE per saccade so turns sweep smoothly with zero vibration)
+    private double windYaw, windPitch;
+    // Sub-pixel physiological wrist drift accumulators (quantized smoothly via hardware GCD)
+    private double subpixelDriftYaw, subpixelDriftPitch;
+    private long tickCounter;
+
+    public MouseModel(ForkableRandom rand) {
+        this.rand = rand;
+    }
+
+    public MouseModel fork() {
+        MouseModel copy = new MouseModel(this.rand.fork());
+        copy.initialized = this.initialized;
+        copy.currentYaw = this.currentYaw;
+        copy.currentPitch = this.currentPitch;
+        copy.velYaw = this.velYaw;
+        copy.velPitch = this.velPitch;
+        copy.startYaw = this.startYaw;
+        copy.startPitch = this.startPitch;
+        copy.primaryGoalYaw = this.primaryGoalYaw;
+        copy.primaryGoalPitch = this.primaryGoalPitch;
+        copy.finalGoalYaw = this.finalGoalYaw;
+        copy.finalGoalPitch = this.finalGoalPitch;
+        copy.elapsedTicks = this.elapsedTicks;
+        copy.durationTicks = this.durationTicks;
+        copy.hasCorrectionSubmovement = this.hasCorrectionSubmovement;
+        copy.inCorrectionSubmovement = this.inCorrectionSubmovement;
+        copy.startVelYawNorm = this.startVelYawNorm;
+        copy.startVelPitchNorm = this.startVelPitchNorm;
+        copy.hasPrevDesired = this.hasPrevDesired;
+        copy.prevDesiredYaw = this.prevDesiredYaw;
+        copy.prevDesiredPitch = this.prevDesiredPitch;
+        copy.prevDeltaDesYaw = this.prevDeltaDesYaw;
+        copy.prevDeltaDesPitch = this.prevDeltaDesPitch;
+        copy.targetVelYaw = this.targetVelYaw;
+        copy.targetVelPitch = this.targetVelPitch;
+        copy.pinkYaw0 = this.pinkYaw0;
+        copy.pinkYaw1 = this.pinkYaw1;
+        copy.pinkYaw2 = this.pinkYaw2;
+        copy.pinkPitch0 = this.pinkPitch0;
+        copy.pinkPitch1 = this.pinkPitch1;
+        copy.pinkPitch2 = this.pinkPitch2;
+        copy.windYaw = this.windYaw;
+        copy.windPitch = this.windPitch;
+        copy.subpixelDriftYaw = this.subpixelDriftYaw;
+        copy.subpixelDriftPitch = this.subpixelDriftPitch;
+        copy.tickCounter = this.tickCounter;
+        return copy;
+    }
+
+    public void reset(Rotation current) {
+        if (current == null) {
+            this.initialized = false;
+            return;
+        }
+        this.initialized = true;
+        this.currentYaw = current.getYaw();
+        this.currentPitch = current.getPitch();
+        this.velYaw = 0f;
+        this.velPitch = 0f;
+        this.startYaw = this.currentYaw;
+        this.startPitch = this.currentPitch;
+        this.primaryGoalYaw = this.currentYaw;
+        this.primaryGoalPitch = this.currentPitch;
+        this.finalGoalYaw = this.currentYaw;
+        this.finalGoalPitch = this.currentPitch;
+        this.elapsedTicks = 0;
+        this.durationTicks = 0;
+        this.hasCorrectionSubmovement = false;
+        this.inCorrectionSubmovement = false;
+        this.startVelYawNorm = 0.0;
+        this.startVelPitchNorm = 0.0;
+        this.hasPrevDesired = false;
+        this.prevDeltaDesYaw = 0f;
+        this.prevDeltaDesPitch = 0f;
+        this.targetVelYaw = 0f;
+        this.targetVelPitch = 0f;
+        this.windYaw = 0.0;
+        this.windPitch = 0.0;
+        this.subpixelDriftYaw = 0.0;
+        this.subpixelDriftPitch = 0.0;
+    }
+
+    /**
+     * Advances the mouse model by one game tick toward {@code desired}.
+     *
+     * @param playerCurrent   current player rotation
+     * @param desired         target rotation
+     * @param blockInteract   whether precision block/entity interaction is required
+     * @param alreadyOnTarget true if raycast already hits the intended block/entity inside safe bounds
+     * @param profile         active human profile
+     * @param sensitivity     Minecraft mouse sensitivity option (0.0 .. 1.0, default 0.5)
+     * @return next quantized rotation for this tick
+     */
+    public Rotation step(
+            Rotation playerCurrent,
+            Rotation desired,
+            boolean blockInteract,
+            boolean alreadyOnTarget,
+            HumanProfile profile,
+            double sensitivity
+    ) {
+        return step(playerCurrent, desired, blockInteract, alreadyOnTarget, profile, sensitivity, false);
+    }
+
+    /**
+     * Advances the mouse model by one game tick toward {@code desired}.
+     * When {@code bridgeAnchor} is true, wide WindMouse arcs and overshoot are suppressed
+     * so the crosshair never slips off a bridge placement face.
+     */
+    public Rotation step(
+            Rotation playerCurrent,
+            Rotation desired,
+            boolean blockInteract,
+            boolean alreadyOnTarget,
+            HumanProfile profile,
+            double sensitivity,
+            boolean bridgeAnchor
+    ) {
+        return step(playerCurrent, desired, blockInteract, alreadyOnTarget, profile, sensitivity, bridgeAnchor, false);
+    }
+
+    /**
+     * Advances the mouse model by one game tick toward {@code desired}.
+     * When {@code urgentClutch} is true, emergency void-save rotations turn cleanly within 2-4 ticks
+     * with GCD quantization and no WindMouse arc overshoot.
+     */
+    public Rotation step(
+            Rotation playerCurrent,
+            Rotation desired,
+            boolean blockInteract,
+            boolean alreadyOnTarget,
+            HumanProfile profile,
+            double sensitivity,
+            boolean bridgeAnchor,
+            boolean urgentClutch
+    ) {
+        tickCounter++;
+        if (!initialized) {
+            reset(playerCurrent);
+        } else if (angularDistance(new Rotation(currentYaw, currentPitch), playerCurrent) > 35.0f) {
+            // External teleport or manual camera movement
+            reset(playerCurrent);
+        }
+
+        float targetPitch = desired.getPitch();
+        if (!blockInteract && !bridgeAnchor && !urgentClutch && Math.abs(targetPitch - playerCurrent.getPitch()) < 0.001f) {
+            targetPitch = nudgeHorizonPitch(playerCurrent.getPitch(), tickCounter);
+        }
+
+        // Track target angular velocity ONLY when direction is consistent across ticks (never amplify jitter/reversals!)
+        if (hasPrevDesired) {
+            float dDesYaw = shortestYawDelta(prevDesiredYaw, desired.getYaw());
+            float dDesPitch = targetPitch - prevDesiredPitch;
+            if (Math.hypot(dDesYaw, dDesPitch) < 22.0f) {
+                if (dDesYaw * prevDeltaDesYaw > 0.0f) {
+                    targetVelYaw = targetVelYaw * 0.65f + clampFloat(dDesYaw, -7.0f, 7.0f) * 0.35f;
+                } else {
+                    targetVelYaw *= 0.25f;
+                }
+                if (dDesPitch * prevDeltaDesPitch > 0.0f) {
+                    targetVelPitch = targetVelPitch * 0.65f + clampFloat(dDesPitch, -5.0f, 5.0f) * 0.35f;
+                } else {
+                    targetVelPitch *= 0.25f;
+                }
+            } else {
+                targetVelYaw = 0f;
+                targetVelPitch = 0f;
+            }
+            prevDeltaDesYaw = dDesYaw;
+            prevDeltaDesPitch = dDesPitch;
+        } else {
+            hasPrevDesired = true;
+            prevDeltaDesYaw = 0f;
+            prevDeltaDesPitch = 0f;
+        }
+        prevDesiredYaw = desired.getYaw();
+        prevDesiredPitch = targetPitch;
+
+        float leadYaw = desired.getYaw() + ((bridgeAnchor || blockInteract) ? 0f : targetVelYaw * 0.32f);
+        float leadPitch = Rotation.clampPitch(targetPitch + ((bridgeAnchor || blockInteract) ? 0f : targetVelPitch * 0.25f));
+
+        float deltaToNewGoalYaw = shortestYawDelta(finalGoalYaw, leadYaw);
+        float deltaToNewGoalPitch = leadPitch - finalGoalPitch;
+        float goalShift = (float) Math.hypot(deltaToNewGoalYaw, deltaToNewGoalPitch);
+
+        float totalDistYaw = shortestYawDelta(currentYaw, desired.getYaw());
+        float totalDistPitch = targetPitch - currentPitch;
+        float totalDist = (float) Math.hypot(totalDistYaw, totalDistPitch);
+
+        if (urgentClutch) {
+            if (totalDist > 12.0f) {
+                if (goalShift > 12.0f || durationTicks == 0) {
+                    this.startYaw = this.currentYaw;
+                    this.startPitch = this.currentPitch;
+                    this.finalGoalYaw = this.currentYaw + totalDistYaw;
+                    this.finalGoalPitch = Rotation.clampPitch(this.currentPitch + totalDistPitch);
+                    this.primaryGoalYaw = this.finalGoalYaw;
+                    this.primaryGoalPitch = this.finalGoalPitch;
+                    this.elapsedTicks = 0;
+                    this.durationTicks = Math.max(2, Math.min(4, (int) Math.ceil((1.875 * totalDist) / 56.0)));
+                    this.startVelYawNorm = Math.abs(totalDistYaw) >= 3.0f ? clampDouble(velYaw * durationTicks / totalDistYaw, -0.25, 1.3) : 0.0;
+                    this.startVelPitchNorm = Math.abs(totalDistPitch) >= 2.0f ? clampDouble(velPitch * durationTicks / totalDistPitch, -0.25, 1.3) : 0.0;
+                    this.hasCorrectionSubmovement = false;
+                    this.inCorrectionSubmovement = false;
+                }
+                elapsedTicks++;
+                double tau = Math.min(1.0, (double) elapsedTicks / (double) durationTicks);
+                double sy = hermiteMinimumJerk(tau, startVelYawNorm);
+                double sp = hermiteMinimumJerk(tau, startVelPitchNorm);
+                float nextYaw = startYaw + (float) (sy * (primaryGoalYaw - startYaw));
+                float nextPitch = startPitch + (float) (sp * (primaryGoalPitch - startPitch));
+                if (elapsedTicks >= durationTicks) {
+                    durationTicks = 0;
+                    elapsedTicks = 0;
+                }
+                return applyQuantizedStep(nextYaw, Rotation.clampPitch(nextPitch), sensitivity, 54.5);
+            }
+            this.durationTicks = 0;
+            this.hasCorrectionSubmovement = false;
+            this.inCorrectionSubmovement = false;
+            float nextYaw = currentYaw + totalDistYaw * 0.90f;
+            float nextPitch = Rotation.clampPitch(currentPitch + totalDistPitch * 0.90f);
+            return applyQuantizedStep(nextYaw, nextPitch, sensitivity, 54.5);
+        }
+
+        if (bridgeAnchor) {
+            if (totalDist > 26.0f || durationTicks > 0) {
+                // Fast multi-tick minimum-jerk bell-shaped accel/decel turn onto a bridge face;
+                // only start a fresh curve on large goal shifts (> 14 deg) so small step nudges never restart at tau=0
+                if (goalShift > 14.0f || durationTicks == 0) {
+                    this.startYaw = this.currentYaw;
+                    this.startPitch = this.currentPitch;
+                    this.finalGoalYaw = this.currentYaw + totalDistYaw;
+                    this.finalGoalPitch = Rotation.clampPitch(this.currentPitch + totalDistPitch);
+                    this.primaryGoalYaw = this.finalGoalYaw;
+                    this.primaryGoalPitch = this.finalGoalPitch;
+                    this.elapsedTicks = 0;
+                    this.durationTicks = Math.max(3, Math.min(8, computeFittsTicks(totalDist, 12.5, profile)));
+                    this.startVelYawNorm = Math.abs(totalDistYaw) >= 3.0f ? clampDouble(velYaw * durationTicks / totalDistYaw, -0.35, 1.4) : 0.0;
+                    this.startVelPitchNorm = Math.abs(totalDistPitch) >= 2.0f ? clampDouble(velPitch * durationTicks / totalDistPitch, -0.35, 1.4) : 0.0;
+                    this.hasCorrectionSubmovement = false;
+                    this.inCorrectionSubmovement = false;
+                } else {
+                    this.finalGoalYaw = this.currentYaw + totalDistYaw;
+                    this.finalGoalPitch = Rotation.clampPitch(this.currentPitch + totalDistPitch);
+                    this.primaryGoalYaw = this.finalGoalYaw;
+                    this.primaryGoalPitch = this.finalGoalPitch;
+                }
+                elapsedTicks++;
+                double tau = Math.min(1.0, (double) elapsedTicks / (double) durationTicks);
+                double sy = hermiteMinimumJerk(tau, startVelYawNorm);
+                double sp = hermiteMinimumJerk(tau, startVelPitchNorm);
+                float nextYaw = startYaw + (float) (sy * (primaryGoalYaw - startYaw));
+                float nextPitch = startPitch + (float) (sp * (primaryGoalPitch - startPitch));
+                if (elapsedTicks >= durationTicks) {
+                    durationTicks = 0;
+                    elapsedTicks = 0;
+                }
+                return applyQuantizedStep(nextYaw, Rotation.clampPitch(nextPitch), sensitivity);
+            }
+            // Close-range Bridge Anchor Mode: smooth human accel/decel settle without restart stutter
+            this.durationTicks = 0;
+            this.hasCorrectionSubmovement = false;
+            this.inCorrectionSubmovement = false;
+            double baseAlpha = Math.min(0.82, Math.max(0.58, profile.pursuitAlpha() * 1.05));
+            // Smooth bell-shaped gain across [0..26 deg] so small corrections decelerate smoothly into the face
+            double decelScale = totalDist < 3.5f ? (0.68 + 0.32 * (totalDist / 3.5f)) : 1.0;
+            double alpha = baseAlpha * decelScale;
+            float tinyDriftYaw = (float) nextPinkYaw(profile.tremor() * 0.06);
+            float tinyDriftPitch = (float) nextPinkPitch(profile.tremor() * 0.05);
+            float nextYaw = currentYaw + (float) (totalDistYaw * alpha) + tinyDriftYaw;
+            float nextPitch = Rotation.clampPitch(currentPitch + (float) (totalDistPitch * alpha) + tinyDriftPitch);
+            return applyQuantizedStep(nextYaw, nextPitch, sensitivity);
+        }
+
+        float targetWidthDeg = blockInteract ? 5.5f : 11.5f;
+        float coastRadiusDeg = blockInteract ? 1.45f : 2.10f;
+
+        // Crosshair coasting only when already inside tight precision deadzone and target isn't moving quickly
+        double targetSpeed = Math.hypot(targetVelYaw, targetVelPitch);
+        if ((alreadyOnTarget && totalDist < targetWidthDeg * 0.90f)
+                || (totalDist <= coastRadiusDeg && durationTicks == 0 && targetSpeed < 0.55)) {
+            if (alreadyOnTarget) {
+                durationTicks = 0;
+                elapsedTicks = 0;
+                hasCorrectionSubmovement = false;
+                inCorrectionSubmovement = false;
+            }
+            // Ultra-gentle, slow sub-pixel wrist breathing (~1 GCD pixel every few ticks, zero visible camera vibration!)
+            boolean tightBreakLock = alreadyOnTarget && blockInteract;
+            double scale = tightBreakLock ? 0.04 : (alreadyOnTarget ? 0.28 : (blockInteract ? 0.16 : 0.78));
+            double eqYaw = scale * (0.42 * Math.sin(tickCounter * 0.19 + 0.7) + 0.18 * Math.sin(tickCounter * 0.37 + 1.9));
+            double eqPitch = scale * (0.28 * Math.cos(tickCounter * 0.15 + 0.3) + 0.12 * Math.cos(tickCounter * 0.31 + 1.1));
+            double pinkMag = tightBreakLock
+                    ? Math.max(0.015, profile.tremor() * 0.06)
+                    : Math.max(alreadyOnTarget ? 0.03 : 0.05, profile.tremor() * 0.35);
+            double idealYawOffset = totalDistYaw + eqYaw + nextPinkYaw(pinkMag);
+            double idealPitchOffset = (targetPitch - currentPitch) + eqPitch + nextPinkPitch(pinkMag * 0.80);
+            double pullGainYaw = tightBreakLock ? 0.48 : (alreadyOnTarget ? 0.38 : 0.34);
+            double pullGainPitch = tightBreakLock ? 0.46 : (alreadyOnTarget ? 0.36 : 0.32);
+            double maxStepYaw = tightBreakLock ? 0.15 : 0.25;
+            double maxStepPitch = tightBreakLock ? 0.12 : 0.20;
+            double maxDriftYaw = tightBreakLock ? 0.15 : 0.45;
+            double maxDriftPitch = tightBreakLock ? 0.12 : 0.36;
+            subpixelDriftYaw = clampDouble(subpixelDriftYaw + clampDouble(idealYawOffset * pullGainYaw, -maxStepYaw, maxStepYaw), -maxDriftYaw, maxDriftYaw);
+            subpixelDriftPitch = clampDouble(subpixelDriftPitch + clampDouble(idealPitchOffset * pullGainPitch, -maxStepPitch, maxStepPitch), -maxDriftPitch, maxDriftPitch);
+            float prevY = this.currentYaw;
+            float prevP = this.currentPitch;
+            Rotation stepped = applyQuantizedStep(
+                    prevY + (float) subpixelDriftYaw,
+                    Rotation.clampPitch(prevP + (float) subpixelDriftPitch),
+                    sensitivity
+            );
+            subpixelDriftYaw = clampDouble(subpixelDriftYaw - shortestYawDelta(prevY, stepped.getYaw()), -maxDriftYaw, maxDriftYaw);
+            subpixelDriftPitch = clampDouble(subpixelDriftPitch - (stepped.getPitch() - prevP), -maxDriftPitch, maxDriftPitch);
+            return stepped;
+        }
+
+        float leadDistYaw = shortestYawDelta(currentYaw, leadYaw);
+        float leadDistPitch = leadPitch - currentPitch;
+        float leadDist = (float) Math.hypot(leadDistYaw, leadDistPitch);
+
+        // Start or seamlessly redirect a velocity-continuous Hermite saccade without resetting momentum mid-flick on strafing targets.
+        boolean movingTarget = targetSpeed >= 0.35;
+        float redirectThreshold = movingTarget ? 14.0f : (blockInteract ? 5.0f : 7.5f);
+        float goalYawNow = shortestYawDelta(currentYaw, finalGoalYaw);
+        boolean directionReversed = (goalYawNow * shortestYawDelta(currentYaw, leadYaw)) <= 0.0f;
+        boolean majorRestart = durationTicks > 0
+                ? (goalShift > 38.0f || (directionReversed && goalShift > redirectThreshold))
+                : false;
+        boolean startNewSaccade = majorRestart
+                || (durationTicks == 0 && totalDist > coastRadiusDeg && !(movingTarget && totalDist <= 16.0f));
+        if (startNewSaccade) {
+            planSaccade(leadDistYaw, leadDistPitch, Math.max(totalDist, leadDist), targetWidthDeg, profile);
+        } else if (goalShift > 0.05f && durationTicks > 0) {
+            // Smooth pursuit update for target motion during an active turn without resetting elapsedTicks
+            float blend = (movingTarget || !blockInteract) ? 1.0f : (float) Math.max(0.65, profile.pursuitAlpha());
+            this.finalGoalYaw += deltaToNewGoalYaw * blend;
+            this.finalGoalPitch = Rotation.clampPitch(this.finalGoalPitch + deltaToNewGoalPitch * blend);
+            if (goalShift > 2.5f && hasCorrectionSubmovement && !inCorrectionSubmovement) {
+                this.hasCorrectionSubmovement = false;
+            }
+            if (!hasCorrectionSubmovement || inCorrectionSubmovement) {
+                this.primaryGoalYaw = this.finalGoalYaw;
+                this.primaryGoalPitch = this.finalGoalPitch;
+            }
+        }
+
+        float nextUnquantizedYaw;
+        float nextUnquantizedPitch;
+
+        if (durationTicks > 0) {
+            elapsedTicks++;
+            double tau = Math.min(1.0, (double) elapsedTicks / (double) durationTicks);
+            double sy = hermiteMinimumJerk(tau, startVelYawNorm);
+            double sp = hermiteMinimumJerk(tau, startVelPitchNorm);
+
+            nextUnquantizedYaw = startYaw + (float) (sy * (primaryGoalYaw - startYaw));
+            nextUnquantizedPitch = startPitch + (float) (sp * (primaryGoalPitch - startPitch));
+
+            // Single smooth C-infinity curved wrist sweep per saccade (sampled ONCE in planSaccade — zero per-tick zig-zag!)
+            double arcEnvelope = Math.sin(Math.PI * tau);
+            nextUnquantizedYaw += (float) (windYaw * arcEnvelope);
+            nextUnquantizedPitch += (float) (windPitch * arcEnvelope);
+
+            // Subtle velocity-scaled micro-noise (kept tiny so turns never reverse sign mid-sweep)
+            double noiseScale = profile.tremor() * 0.08;
+            nextUnquantizedYaw += (float) nextPinkYaw(noiseScale);
+            nextUnquantizedPitch += (float) nextPinkPitch(noiseScale * 0.80);
+
+            if (elapsedTicks >= durationTicks) {
+                if (hasCorrectionSubmovement && !inCorrectionSubmovement) {
+                    // Transition into corrective sub-movement preserving exit velocity
+                    inCorrectionSubmovement = true;
+                    startYaw = nextUnquantizedYaw;
+                    startPitch = nextUnquantizedPitch;
+                    primaryGoalYaw = finalGoalYaw;
+                    primaryGoalPitch = finalGoalPitch;
+                    windYaw = 0.0;
+                    windPitch = 0.0;
+                    elapsedTicks = 0;
+                    float remYaw = shortestYawDelta(startYaw, finalGoalYaw);
+                    float remPitch = finalGoalPitch - startPitch;
+                    float remDist = (float) Math.hypot(remYaw, remPitch);
+                    durationTicks = Math.max(1, Math.min(2, Math.round(remDist / 6.0f) + 1));
+                    startVelYawNorm = Math.abs(remYaw) >= 1.5f ? clampDouble(velYaw * durationTicks / remYaw, -0.35, 1.2) : 0.0;
+                    startVelPitchNorm = Math.abs(remPitch) >= 1.5f ? clampDouble(velPitch * durationTicks / remPitch, -0.35, 1.2) : 0.0;
+                } else {
+                    durationTicks = 0;
+                    elapsedTicks = 0;
+                    hasCorrectionSubmovement = false;
+                    inCorrectionSubmovement = false;
+                    startVelYawNorm = 0.0;
+                    startVelPitchNorm = 0.0;
+                    windYaw = 0.0;
+                    windPitch = 0.0;
+                }
+            }
+        } else {
+            // Silky critically-damped pursuit respecting profile speed without double-lead overshoot in precision aim
+            float alpha = (float) Math.min(0.82, Math.max(0.48, profile.pursuitAlpha()));
+            float leadScaleYaw = blockInteract ? 0.0f : 0.16f;
+            float leadScalePitch = blockInteract ? 0.0f : 0.12f;
+            nextUnquantizedYaw = currentYaw + totalDistYaw * alpha + targetVelYaw * leadScaleYaw + (float) nextPinkYaw(profile.tremor() * 0.06);
+            nextUnquantizedPitch = currentPitch + totalDistPitch * alpha + targetVelPitch * leadScalePitch + (float) nextPinkPitch(profile.tremor() * 0.05);
+        }
+
+        return applyQuantizedStep(nextUnquantizedYaw, Rotation.clampPitch(nextUnquantizedPitch), sensitivity);
+    }
+
+    /**
+     * Computes the Fitts' law movement duration in ticks for an angular turn of {@code distanceDeg}
+     * into a target of width {@code widthDeg}, bounded so peak minimum-jerk angular velocity never
+     * exceeds realistic human wrist speed.
+     */
+    public static int computeFittsTicks(double distanceDeg, double widthDeg, HumanProfile profile) {
+        if (distanceDeg <= 2.2) {
+            return 1;
+        }
+        double id = Math.log(distanceDeg / Math.max(1.0, widthDeg) + 1.0) / Math.log(2.0);
+        double rawTicks = (profile.fittsBaseTicks() + profile.fittsSlopeTicks() * id) / profile.aimSpeed();
+        double maxPeakDegPerTick = Math.max(19.0, Math.min(31.0, 24.5 * profile.aimSpeed()));
+        int minTicksForSpeed = distanceDeg <= 12.0
+                ? 1
+                : (int) Math.ceil((1.875 * distanceDeg) / maxPeakDegPerTick);
+        return Math.max(1, Math.min(13, Math.max((int) Math.round(rawTicks), minTicksForSpeed)));
+    }
+
+    /**
+     * Minimum-jerk position profile s(tau) = 10*tau^3 - 15*tau^4 + 6*tau^5 for tau in [0, 1].
+     */
+    public static double minimumJerk(double tau) {
+        return hermiteMinimumJerk(tau, 0.0);
+    }
+
+    /**
+     * Velocity-continuous quintic minimum-jerk Hermite spline matching normalized initial slope {@code u0}
+     * and settling smoothly to zero acceleration/velocity at {@code tau = 1}.
+     */
+    public static double hermiteMinimumJerk(double tau, double u0) {
+        if (tau <= 0.0) {
+            return 0.0;
+        }
+        if (tau >= 1.0) {
+            return 1.0;
+        }
+        double c3 = 10.0 - 6.0 * u0;
+        double c4 = -15.0 + 8.0 * u0;
+        double c5 = 6.0 - 3.0 * u0;
+        double t2 = tau * tau;
+        double t3 = t2 * tau;
+        return u0 * tau + t3 * (c3 + tau * (c4 + tau * c5));
+    }
+
+    private void planSaccade(
+            float deltaYaw,
+            float deltaPitch,
+            float distanceDeg,
+            float widthDeg,
+            HumanProfile profile
+    ) {
+        this.startYaw = this.currentYaw;
+        this.startPitch = this.currentPitch;
+        this.finalGoalYaw = this.currentYaw + deltaYaw;
+        this.finalGoalPitch = Rotation.clampPitch(this.currentPitch + deltaPitch);
+        this.elapsedTicks = 0;
+        this.durationTicks = computeFittsTicks(distanceDeg, widthDeg, profile);
+
+        // Preserve angular momentum across mid-flight target updates
+        this.startVelYawNorm = Math.abs(deltaYaw) >= 3.0f
+                ? clampDouble((velYaw * durationTicks) / deltaYaw, -0.35, 1.50)
+                : 0.0;
+        this.startVelPitchNorm = Math.abs(deltaPitch) >= 2.0f
+                ? clampDouble((velPitch * durationTicks) / deltaPitch, -0.35, 1.50)
+                : 0.0;
+
+        // Sample ONE smooth orthogonal wrist-arc bias for the entire saccade (Taunahi-smooth single curve, zero jitter)
+        double arcMag = distanceDeg > 14.0f ? Math.min(2.2, distanceDeg * 0.032) * Math.max(0.15, profile.tremor()) : 0.0;
+        double arcSign = (rand.nextDouble() * 2.0 - 1.0) * arcMag;
+        double invD = distanceDeg > 1e-3f ? (1.0 / distanceDeg) : 0.0;
+        this.windYaw = -deltaPitch * invD * arcSign;
+        this.windPitch = deltaYaw * invD * arcSign * 0.65;
+
+        // On larger flicks (> 48 deg) with overshoot enabled, create a modest primary overshoot (~2-4%) + 1-tick settle
+        if (distanceDeg > 48.0f && profile.overshoot() > 0.01 && durationTicks >= 3) {
+            double gain = 1.0 + profile.overshoot() * 0.06 * (rand.nextDouble() * 1.15 - 0.15);
+            double ortho = profile.overshoot() * 0.015 * HumanProfile.nextGaussian(rand);
+            this.primaryGoalYaw = this.startYaw + (float) (deltaYaw * gain - deltaPitch * ortho);
+            this.primaryGoalPitch = Rotation.clampPitch(this.startPitch + (float) (deltaPitch * gain + deltaYaw * ortho));
+            this.hasCorrectionSubmovement = Math.hypot(
+                    shortestYawDelta(primaryGoalYaw, finalGoalYaw),
+                    finalGoalPitch - primaryGoalPitch
+            ) > 1.2;
+            this.inCorrectionSubmovement = false;
+        } else {
+            this.primaryGoalYaw = this.finalGoalYaw;
+            this.primaryGoalPitch = this.finalGoalPitch;
+            this.hasCorrectionSubmovement = false;
+            this.inCorrectionSubmovement = false;
+        }
+    }
+
+    private static float clampFloat(float v, float lo, float hi) {
+        return Math.max(lo, Math.min(hi, v));
+    }
+
+    private static double clampDouble(double v, double lo, double hi) {
+        return Math.max(lo, Math.min(hi, v));
+    }
+
+    private Rotation applyQuantizedStep(float targetYaw, float targetPitch, double sensitivity) {
+        return applyQuantizedStep(targetYaw, targetPitch, sensitivity, 33.5);
+    }
+
+    private Rotation applyQuantizedStep(float targetYaw, float targetPitch, double sensitivity, double maxDegPerTick) {
+        float prevYaw = this.currentYaw;
+        float prevPitch = this.currentPitch;
+
+        float dYaw = shortestYawDelta(prevYaw, targetYaw);
+        float dPitch = Rotation.clampPitch(targetPitch) - prevPitch;
+        double angularMag = Math.hypot(dYaw, dPitch);
+        if (angularMag > maxDegPerTick) {
+            double scale = maxDegPerTick / angularMag;
+            targetYaw = prevYaw + (float) (dYaw * scale);
+            targetPitch = prevPitch + (float) (dPitch * scale);
+        }
+
+        float qYaw = quantizeAngle(prevYaw, targetYaw, sensitivity);
+        float qPitch = Rotation.clampPitch(quantizeAngle(prevPitch, targetPitch, sensitivity));
+
+        this.velYaw = qYaw - prevYaw;
+        this.velPitch = qPitch - prevPitch;
+        this.currentYaw = qYaw;
+        this.currentPitch = qPitch;
+
+        return new Rotation(qYaw, qPitch);
+    }
+
+    /**
+     * Applies Minecraft's exact mouse sensitivity quantization step (GCD).
+     */
+    public static float quantizeAngle(float current, float target, double sensitivity) {
+        float step = mouseStepAngle(sensitivity);
+        if (step <= 0f) {
+            return target;
+        }
+        long pixels = Math.round((target - current) / step);
+        return current + pixels * step;
+    }
+
+    public static float mouseStepAngle(double sensitivity) {
+        double f = sensitivity * (double) 0.6f + (double) 0.2f;
+        return (float) (1.0d * f * f * f * 8.0d) * 0.15f;
+    }
+
+    public boolean isAlignedWith(Rotation target, float maxErrorDeg) {
+        if (!initialized || target == null) {
+            return false;
+        }
+        return angularDistance(new Rotation(currentYaw, currentPitch), target) <= maxErrorDeg;
+    }
+
+    public static float angularDistance(Rotation a, Rotation b) {
+        float dy = shortestYawDelta(a.getYaw(), b.getYaw());
+        float dp = b.getPitch() - a.getPitch();
+        return (float) Math.hypot(dy, dp);
+    }
+
+    public static float shortestYawDelta(float fromYaw, float toYaw) {
+        return Rotation.normalizeYaw(toYaw - fromYaw);
+    }
+
+    private static float nudgeHorizonPitch(float pitch, long tick) {
+        // Gentle, steady horizon settling without high-frequency nodding
+        float microBreath = (float) (Math.sin(tick * 0.08) * 0.10);
+        if (pitch < -14f) {
+            return pitch + 0.70f;
+        } else if (pitch > 12f) {
+            return pitch - 0.70f;
+        }
+        return pitch + microBreath;
+    }
+
+    private double nextPinkYaw(double scale) {
+        double white = (rand.nextDouble() - 0.5) * 2.0;
+        pinkYaw0 = 0.99765 * pinkYaw0 + white * 0.0990460;
+        pinkYaw1 = 0.96300 * pinkYaw1 + white * 0.2965164;
+        pinkYaw2 = 0.57000 * pinkYaw2 + white * 1.0526913;
+        return (pinkYaw0 + pinkYaw1 + pinkYaw2 + white * 0.1848) * 0.12 * scale;
+    }
+
+    private double nextPinkPitch(double scale) {
+        double white = (rand.nextDouble() - 0.5) * 2.0;
+        pinkPitch0 = 0.99765 * pinkPitch0 + white * 0.0990460;
+        pinkPitch1 = 0.96300 * pinkPitch1 + white * 0.2965164;
+        pinkPitch2 = 0.57000 * pinkPitch2 + white * 1.0526913;
+        return (pinkPitch0 + pinkPitch1 + pinkPitch2 + white * 0.1848) * 0.12 * scale;
+    }
+
+    public boolean hasPosition() {
+        return initialized;
+    }
+
+    public Rotation currentRotation() {
+        return new Rotation(currentYaw, currentPitch);
+    }
+
+    public float velocityDegPerTick() {
+        return (float) Math.hypot(velYaw, velPitch);
+    }
+}

@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "ibuprofen",
+  "version": "${version}",
+  "name": "Ibuprobridging",
+  "description": "Clean, phase-built 3-layer BedWars automation mod for Minecraft 26.3.",
+  "authors": [
+    "5ivesaw"
+  ],
+  "contact": {
+    "homepage": "https://github.com/5ivesaw/ibuprobridging",
+    "sources": "https://github.com/5ivesaw/ibuprobridging"
+  },
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "ibuprofen.IbuprofenMod"
+    ]
+  },
+  "mixins": [
+    "ibuprofen.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "~26.3",
+    "java": ">=25",
+    "fabric-api": "*"
+  }
+}
