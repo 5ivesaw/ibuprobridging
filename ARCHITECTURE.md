@@ -84,8 +84,8 @@ tools/              # Offline Python diagnostics: ibu_inspect.py
 | :---: | :--- | :---: | :--- |
 | 0 | `world/` + `motor/` + `telemetry/` + `command/` + `mixin/` | Done | Shared map/match awareness, 5-channel arbiter, human aim/keys, `.jsonl.gz` recorder, `#ibu` |
 | 0.5 | `event/` + `memory/` + Layer 1 hardening | Done | `MatchEventBus`, persistent `MatchMemory` (X-ray bed dossiers, enemy gear, wish list), respawn persistence, `#ibu mem` |
-| 1 | `skills/nav/` | Next | BedWars-native A* island walker (`WalkSkill`) around stairs/slabs/void edges |
-| 2 | `skills/shop/` | Pending | Opens shop NPCs cleanly, reads server prices, buys loadouts + wish-list counters, stashes valuables |
+| 1 | `skills/nav/` | Done (Phase 1) | BedWars-native A* island walker (`WalkSkill`) around stairs/slabs/void edges + `#ibu test walk` |
+| 2 | `skills/shop/` | Next | Opens shop NPCs cleanly, reads server prices, buys loadouts + wish-list counters, stashes valuables |
 | 3 | `skills/move/` | Pending | Smooth Ninja/Safe bridging, gap crossing, and reactive void clutching |
 | 4 | `skills/combat/` | Pending | 1.8 BedWars melee, W-tap/strafe, KB recovery, fireball aim & deflection, composable heal |
 | 5 | `skills/bedwars/` | Pending | Timed generator runs, bed defense shells, X-ray bed breaking, safe retreats |

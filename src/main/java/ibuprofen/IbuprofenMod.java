@@ -1,14 +1,18 @@
 package ibuprofen;
 
 import ibuprofen.command.IbuCommand;
+import ibuprofen.event.MatchEvent;
 import ibuprofen.event.MatchEventBus;
 import ibuprofen.memory.MatchMemory;
 import ibuprofen.motor.InputArbiter;
+import ibuprofen.skills.Skill;
+import ibuprofen.skills.SkillResult;
 import ibuprofen.telemetry.DebugRecorder;
 import ibuprofen.world.TickSnapshot;
 import ibuprofen.world.WorldState;
 import net.fabricmc.api.ClientModInitializer;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.client.player.LocalPlayer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,7 +21,7 @@ import java.nio.file.Path;
 
 /**
  * Ibuprobridging (internal id: ibuprofen) Fabric client entrypoint.
- * Connects WorldState -> MatchEventBus -> (MatchMemory, DebugRecorder) and 5-channel InputArbiter.
+ * Connects WorldState -> MatchEventBus -> (MatchMemory, DebugRecorder), Layer 2 Skills, and InputArbiter.
  */
 public final class IbuprofenMod implements ClientModInitializer {
 
@@ -31,6 +35,7 @@ public final class IbuprofenMod implements ClientModInitializer {
     private final WorldState worldState = new WorldState();
     private final InputArbiter inputArbiter = new InputArbiter();
     private DebugRecorder debugRecorder;
+    private Skill activeSkill = null;
 
     public static IbuprofenMod get() {
         return instance;
@@ -45,7 +50,7 @@ public final class IbuprofenMod implements ClientModInitializer {
         eventBus.subscribe(matchMemory::onEvent);
         eventBus.subscribe(debugRecorder::onEvent);
 
-        LOGGER.info("Ibuprobridging Phase 0.5 initialized (EventBus + MatchMemory + standalone Fabric 26.3).");
+        LOGGER.info("Ibuprobridging Phase 1 initialized (EventBus + MatchMemory + Island Navigation).");
     }
 
     public MatchEventBus eventBus() {
@@ -68,6 +73,32 @@ public final class IbuprofenMod implements ClientModInitializer {
         return debugRecorder;
     }
 
+    public String activeSkillName() {
+        return activeSkill != null ? activeSkill.name() : "none";
+    }
+
+    public void startSkill(Skill skill) {
+        long tick = worldState.tickCount();
+        if (activeSkill != null) {
+            activeSkill.cancel(tick, eventBus, "replaced");
+        }
+        activeSkill = skill;
+        if (skill != null) {
+            eventBus.publish(new MatchEvent.SkillOutcomeEvent(tick, skill.name(), "STARTED", "command"));
+        }
+    }
+
+    public void stopActiveSkill(String reason) {
+        long tick = worldState.tickCount();
+        if (activeSkill != null) {
+            String name = activeSkill.name();
+            activeSkill.cancel(tick, eventBus, reason);
+            eventBus.publish(new MatchEvent.SkillOutcomeEvent(tick, name, "CANCELLED", reason));
+            activeSkill = null;
+        }
+        inputArbiter.releaseAll(tick, eventBus, reason);
+    }
+
     /**
      * Called once at the start of every Minecraft client tick from MinecraftTickMixin.
      */
@@ -81,13 +112,26 @@ public final class IbuprofenMod implements ClientModInitializer {
 
         matchMemory.tickUpdate(mc.level, worldState.mapCore(), worldState.matchState(), snap, tick, eventBus);
 
-        // Layer 2 skills will submit channel requests here starting in Phase 1.
+        // Tick active Layer 2 skill (submits channel requests to InputArbiter)
+        if (activeSkill != null) {
+            SkillResult res = activeSkill.tick(mc, worldState, matchMemory, inputArbiter, eventBus);
+            if (res != null && res.isTerminal()) {
+                String finishedName = activeSkill.name();
+                activeSkill.cancel(tick, eventBus, res.reason());
+                activeSkill = null;
+                eventBus.publish(new MatchEvent.SkillOutcomeEvent(tick, finishedName, res.outcome().name(), res.reason()));
+                IbuCommand.say(finishedName + " -> " + res.outcome() + " (" + res.reason() + ")");
+            }
+        }
+
         inputArbiter.commitTick(mc, tick, eventBus);
 
         if (debugRecorder != null && debugRecorder.isRecording()) {
             LocalPlayer p = mc.player;
             String nearName = snap.nearestEnemy != null ? snap.nearestEnemy.name : null;
             double nearDist = snap.nearestEnemy != null ? Math.sqrt(snap.nearestEnemy.distSq) : 0.0;
+            int pingMs = queryPingMs(mc, p);
+            int fps = mc.getFps();
             debugRecorder.maybeLogHeartbeat(
                     tick,
                     inputArbiter.isAnyActive(),
@@ -98,13 +142,21 @@ public final class IbuprofenMod implements ClientModInitializer {
                     snap.enemies.size(),
                     inputArbiter.formatActiveSummary(),
                     snap.ironCount, snap.goldCount, snap.diamondCount, snap.emeraldCount, snap.blockCount,
-                    nearName, nearDist);
+                    nearName, nearDist,
+                    pingMs, fps);
         }
     }
 
+    public static int queryPingMs(Minecraft mc, LocalPlayer player) {
+        if (mc == null || player == null || mc.getConnection() == null) {
+            return -1;
+        }
+        PlayerInfo info = mc.getConnection().getPlayerInfo(player.getUUID());
+        return info != null ? info.getLatency() : -1;
+    }
+
     public void onWorldChange(boolean disconnected) {
-        long tick = worldState.tickCount();
-        inputArbiter.releaseAll(tick, eventBus, disconnected ? "disconnect" : "level_change");
+        stopActiveSkill(disconnected ? "disconnect" : "level_change");
         if (disconnected) {
             if (debugRecorder != null && debugRecorder.isRecording()) {
                 debugRecorder.stopSession("disconnect");

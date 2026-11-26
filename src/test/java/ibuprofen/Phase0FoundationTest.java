@@ -88,7 +88,7 @@ final class Phase0FoundationTest {
         bus.publish(new MatchEvent.SkillOutcomeEvent(25L, "BridgeSkill", "DONE", "arrived"));
         recorder.maybeLogHeartbeat(30L, true, 10.5, 64.0, -5.2, 90.0f, 12.0f, 20.0f,
                 "DIAMOND_II", "RED", 1, "MOVEMENT=BridgeSkill",
-                16, 4, 2, 0, 32, "EnemyOne", 11.4);
+                16, 4, 2, 0, 32, "EnemyOne", 11.4, 42, 120);
         recorder.stopSession("test_complete");
 
         assertFalse(recorder.isRecording());
@@ -107,6 +107,7 @@ final class Phase0FoundationTest {
         assertTrue(text.contains("session_start"));
         assertTrue(text.contains("BridgeSkill"));
         assertTrue(text.contains("\"res\":[16,4,2,0,32]"));
+        assertTrue(text.contains("\"ping\":42,\"fps\":120"));
         assertTrue(text.contains("\"near\":[\"EnemyOne\",11.4]"));
         assertTrue(text.contains("session_end"));
     }

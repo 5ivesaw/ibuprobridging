@@ -134,7 +134,8 @@ public final class DebugRecorder {
             String phase, String team,
             int enemiesNear, String channelsSummary,
             int iron, int gold, int dia, int em, int blocks,
-            String nearestEnemyName, double nearestEnemyDist) {
+            String nearestEnemyName, double nearestEnemyDist,
+            int pingMs, int fps) {
         if (!recording.get()) {
             return;
         }
@@ -144,7 +145,7 @@ public final class DebugRecorder {
         }
         lastHeartbeatTick = tick;
 
-        StringBuilder sb = new StringBuilder(260);
+        StringBuilder sb = new StringBuilder(280);
         sb.append("{\"t\":").append(tick)
                 .append(",\"k\":\"hb\"")
                 .append(",\"p\":[").append(round1(x)).append(',').append(round1(y)).append(',').append(round1(z)).append(']')
@@ -154,7 +155,9 @@ public final class DebugRecorder {
                 .append("\",\"tm\":\"").append(JsonUtil.esc(team))
                 .append("\",\"en\":").append(enemiesNear)
                 .append(",\"res\":[").append(iron).append(',').append(gold).append(',').append(dia)
-                .append(',').append(em).append(',').append(blocks).append(']');
+                .append(',').append(em).append(',').append(blocks).append(']')
+                .append(",\"ping\":").append(pingMs)
+                .append(",\"fps\":").append(fps);
         if (nearestEnemyName != null && !nearestEnemyName.isEmpty()) {
             sb.append(",\"near\":[\"").append(JsonUtil.esc(nearestEnemyName)).append("\",")
                     .append(round1(nearestEnemyDist)).append(']');

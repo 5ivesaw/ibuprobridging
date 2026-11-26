@@ -20,7 +20,7 @@ This file explains how we work together so the project stays fast, clean, and un
 
 ## 2. Current Focus
 
-* **ACTIVE PHASE:** `Phase 0.5 (Foundation Hardening: EventBus + MatchMemory) → Phase 1 (Island Navigation)`
+* **ACTIVE PHASE:** `Phase 1 (Island Navigation: LocalPathfinder + WalkSkill) → Phase 2 (Shop & Inventory Automator)`
 * Stay focused on the active phase. Don't build Combat, Bridging, Macro Strategy, or ML yet—we'll unlock each phase together once the current one works reliably in real matches.
 
 ---
