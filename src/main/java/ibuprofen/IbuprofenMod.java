@@ -106,9 +106,12 @@ public final class IbuprofenMod implements ClientModInitializer {
         long tick = worldState.tickCount();
         inputArbiter.releaseAll(tick, eventBus, disconnected ? "disconnect" : "level_change");
         if (disconnected) {
+            if (debugRecorder != null && debugRecorder.isRecording()) {
+                debugRecorder.stopSession("disconnect");
+            }
             worldState.onFullReset(eventBus, "disconnect");
         } else {
-            worldState.onLevelSwap(eventBus);
+            worldState.onLevelSwap(eventBus, debugRecorder);
         }
     }
 

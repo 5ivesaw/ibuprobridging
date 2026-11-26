@@ -8,14 +8,28 @@ Usage:
 import gzip
 import json
 import sys
+import zlib
 from collections import Counter
 from pathlib import Path
 
 
-def open_log(path: Path):
+def iter_log_lines(path: Path):
     if path.suffix == ".gz":
-        return gzip.open(path, "rt", encoding="utf-8", errors="replace")
-    return path.open("r", encoding="utf-8", errors="replace")
+        try:
+            with gzip.open(path, "rt", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    yield line
+            return
+        except (EOFError, OSError):
+            # Recover complete lines from an unclosed gzip stream (e.g., hard process kill)
+            decomp = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            data = decomp.decompress(path.read_bytes())
+            for line in data.decode("utf-8", errors="replace").splitlines():
+                yield line
+            return
+    with path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            yield line
 
 
 def format_event(r: dict) -> str:
@@ -77,32 +91,31 @@ def main() -> int:
     first_tick = None
     last_tick = None
 
-    with open_log(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                counts["malformed"] += 1
-                continue
-            k = rec.get("k", "unknown")
-            counts[k] += 1
-            t = rec.get("t")
-            if isinstance(t, int):
-                if first_tick is None or (t > 0 and (first_tick == 0 or t < first_tick)):
-                    first_tick = t
-                if last_tick is None or t > last_tick:
-                    last_tick = t
-            if k == "ch":
-                channels.append(rec)
-            elif k == "skill":
-                skills.append(rec)
-            elif k == "slow":
-                slow_ticks.append(rec)
-            elif k != "hb":
-                events.append(rec)
+    for line in iter_log_lines(path):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            counts["malformed"] += 1
+            continue
+        k = rec.get("k", "unknown")
+        counts[k] += 1
+        t = rec.get("t")
+        if isinstance(t, int):
+            if first_tick is None or (t > 0 and (first_tick == 0 or t < first_tick)):
+                first_tick = t
+            if last_tick is None or t > last_tick:
+                last_tick = t
+        if k == "ch":
+            channels.append(rec)
+        elif k == "skill":
+            skills.append(rec)
+        elif k == "slow":
+            slow_ticks.append(rec)
+        elif k != "hb":
+            events.append(rec)
 
     size_kb = path.stat().st_size / 1024.0
     print(f"=== Ibuprobridging Debug Log: {path.name} ({size_kb:.1f} KB on disk) ===")

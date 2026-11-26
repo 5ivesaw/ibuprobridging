@@ -2,6 +2,7 @@ package ibuprofen;
 
 import ibuprofen.event.MatchEvent;
 import ibuprofen.event.MatchEventBus;
+import ibuprofen.memory.EnemyDossier;
 import ibuprofen.memory.MatchMemory;
 import ibuprofen.memory.ShoppingWishList;
 import ibuprofen.memory.TeamDossier;
@@ -9,11 +10,14 @@ import ibuprofen.telemetry.DebugRecorder;
 import ibuprofen.world.BedwarsDefensePlanner.DefenseBlockKind;
 import ibuprofen.world.BedwarsMapCore.TeamColor;
 import ibuprofen.world.BedwarsMatchState;
+import ibuprofen.world.WorldState;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -124,5 +128,70 @@ final class Phase05MemoryEventTest {
         bus.publish(new MatchEvent.MatchLifecycleEvent(200L, "world_reset", "disconnect"));
         assertNull(memory.getTeamDossier(TeamColor.GREEN));
         assertTrue(memory.computeWishList().isEmpty());
+    }
+
+    @Test
+    void shoppingWishListSummarizesMultipleArmoredEnemiesConcisely() {
+        Map<String, EnemyDossier> enemies = new LinkedHashMap<>();
+        for (int i = 1; i <= 5; i++) {
+            EnemyDossier ed = new EnemyDossier("Player" + i);
+            ed.armorTier = 2;
+            ed.swordTier = 2;
+            ed.seenFireball = true;
+            enemies.put(ed.name, ed);
+        }
+
+        List<ShoppingWishList.WishItem> wish = ShoppingWishList.compute(TeamColor.RED, Map.of(), enemies);
+        ShoppingWishList.WishItem armor = wish.stream()
+                .filter(w -> w.itemId().equals("IRON_ARMOR")).findFirst().orElseThrow();
+        assertEquals("5 enemies have iron/diamond armor (e.g. Player1)", armor.reason());
+        assertTrue(armor.reason().length() < 80);
+    }
+
+    @Test
+    void matchMemoryIgnoresDuplicateBedScansAndResetsOnNewMatch() {
+        MatchEventBus bus = new MatchEventBus();
+        MatchMemory memory = new MatchMemory();
+        bus.subscribe(memory::onEvent);
+
+        bus.publish(new MatchEvent.BedDefenseObservedEvent(
+                100L, TeamColor.AQUA, 2, DefenseBlockKind.WOOD,
+                8, 6, 0, 0, 0, 32.0));
+        assertEquals(100L, memory.getTeamDossier(TeamColor.AQUA).lastDefenseScanTick);
+
+        // Unchanged duplicate scan at tick 120 must not overwrite scan timestamp
+        bus.publish(new MatchEvent.BedDefenseObservedEvent(
+                120L, TeamColor.AQUA, 2, DefenseBlockKind.WOOD,
+                8, 6, 0, 0, 0, 32.0));
+        assertEquals(100L, memory.getTeamDossier(TeamColor.AQUA).lastDefenseScanTick);
+
+        // World reset from new match chat clears old dossiers
+        bus.publish(new MatchEvent.MatchLifecycleEvent(200L, "world_reset", "new_match_chat"));
+        assertNull(memory.getTeamDossier(TeamColor.AQUA));
+    }
+
+    @Test
+    void worldStateOnLevelSwapPreservesAliveMatchAndResetsWhenEliminated() {
+        MatchEventBus bus = new MatchEventBus();
+        MatchMemory memory = new MatchMemory();
+        bus.subscribe(memory::onEvent);
+
+        WorldState ws = new WorldState();
+        ws.matchState().onChatMessage("You are now in team Red.", 1000L);
+        bus.publish(new MatchEvent.TeamAssignedEvent(10L, TeamColor.RED));
+        bus.publish(new MatchEvent.BedDefenseObservedEvent(
+                20L, TeamColor.BLUE, 1, DefenseBlockKind.WOOL,
+                5, 0, 0, 0, 0, 12.0));
+
+        // Alive mid-match respawn preserves memory
+        ws.onLevelSwap(bus, null);
+        assertNotNull(memory.getTeamDossier(TeamColor.BLUE));
+        assertTrue(ws.matchState().isMatchStarted());
+
+        // Eliminated home team triggers full reset on level swap
+        ws.matchState().onChatMessage("Team Red has been eliminated from the game!", 2000L);
+        ws.onLevelSwap(bus, null);
+        assertFalse(ws.matchState().isMatchStarted());
+        assertNull(memory.getTeamDossier(TeamColor.BLUE));
     }
 }

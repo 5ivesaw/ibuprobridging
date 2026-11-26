@@ -59,19 +59,47 @@ public final class ShoppingWishList {
         }
 
         if (enemyDossiers != null) {
+            int ironArmorCount = 0;
+            String firstArmorEnemy = null;
+            int ironSwordCount = 0;
+            String firstSwordEnemy = null;
+            int rangedCount = 0;
+            String firstRangedEnemy = null;
+
             for (EnemyDossier ed : enemyDossiers.values()) {
                 if (ed == null) {
                     continue;
                 }
                 if (ed.armorTier >= 2) {
-                    offer(bestByItem, "IRON_ARMOR", 70, ed.name + " has iron/diamond armor");
+                    ironArmorCount++;
+                    if (firstArmorEnemy == null) firstArmorEnemy = ed.name;
                 }
                 if (ed.swordTier >= 2) {
-                    offer(bestByItem, "IRON_SWORD", 68, ed.name + " has iron/diamond sword");
+                    ironSwordCount++;
+                    if (firstSwordEnemy == null) firstSwordEnemy = ed.name;
                 }
                 if (ed.seenFireball || ed.seenBow) {
-                    offer(bestByItem, "FIREBALL", 55, ed.name + " has ranged/fireball pressure");
+                    rangedCount++;
+                    if (firstRangedEnemy == null) firstRangedEnemy = ed.name;
                 }
+            }
+            if (ironArmorCount > 0) {
+                String why = ironArmorCount == 1
+                        ? firstArmorEnemy + " has iron/diamond armor"
+                        : ironArmorCount + " enemies have iron/diamond armor (e.g. " + firstArmorEnemy + ")";
+                offer(bestByItem, "IRON_ARMOR", 70, why);
+            }
+            if (ironSwordCount > 0) {
+                String why = ironSwordCount == 1
+                        ? firstSwordEnemy + " has iron/diamond sword"
+                        : ironSwordCount + " enemies have iron/diamond sword (e.g. " + firstSwordEnemy + ")";
+                offer(bestByItem, "IRON_SWORD", 68, why);
+            }
+            if (rangedCount > 0) {
+                String why = rangedCount == 1
+                        ? firstRangedEnemy + " has ranged/fireball pressure"
+                        : rangedCount + " enemies have ranged/fireball pressure (e.g. " + firstRangedEnemy + ")";
+                offer(bestByItem, "FIREBALL", 55, why);
             }
         }
 

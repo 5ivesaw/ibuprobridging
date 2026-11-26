@@ -17,16 +17,20 @@ import ibuprofen.world.TickSnapshot.TrackedPlayer;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.Collections;
 import java.util.EnumMap;
+import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Persistent match-wide mental map subscribed to {@link MatchEventBus}.
@@ -47,6 +51,7 @@ public final class MatchMemory {
     private final Map<TeamColor, TeamDossier> teamDossiers = new EnumMap<>(TeamColor.class);
     private final Map<String, EnemyDossier> enemyDossiers = new LinkedHashMap<>();
     private final Map<String, GeneratorClock> genClocks = new LinkedHashMap<>();
+    private final Map<Long, BedShellScan> lastScanByBedPos = new HashMap<>();
 
     private TeamColor homeTeam = TeamColor.UNKNOWN;
     private long lastBedScanTick = -BED_SCAN_INTERVAL_TICKS;
@@ -55,6 +60,7 @@ public final class MatchMemory {
         teamDossiers.clear();
         enemyDossiers.clear();
         genClocks.clear();
+        lastScanByBedPos.clear();
         homeTeam = TeamColor.UNKNOWN;
         lastBedScanTick = -BED_SCAN_INTERVAL_TICKS;
     }
@@ -90,7 +96,9 @@ public final class MatchMemory {
                     if (obs.obsidian() > 0) counts.put(DefenseBlockKind.OBSIDIAN, obs.obsidian());
                     BedShellScan scan = new BedShellScan(
                             obs.layers(), Map.copyOf(counts), obs.hardest(), obs.clearTicks(), 0);
-                    td.updateDefense(scan, obs.tick());
+                    if (!sameScan(td.lastDefenseScan, scan)) {
+                        td.updateDefense(scan, obs.tick());
+                    }
                 }
             }
             case MatchEvent.PlayerKillEvent k -> {
@@ -215,45 +223,68 @@ public final class MatchMemory {
     private void scanLoadedBeds(ClientLevel level, BedwarsMapCore mapCore, long tick, MatchEventBus bus) {
         BlockPos.MutableBlockPos mut = new BlockPos.MutableBlockPos();
         BlockKindClassifier classifier = (bx, by, bz) -> classifyBlock(level, mapCore, mut.set(bx, by, bz));
+        Set<TeamColor> scannedTeamsThisPass = EnumSet.noneOf(TeamColor.class);
 
         for (BedPOI bed : mapCore.getBeds()) {
-            if (bed.team() == TeamColor.UNKNOWN) {
-                continue;
-            }
-            TeamDossier td = dossierFor(bed.team());
-            td.updateBedPos(bed.x(), bed.y(), bed.z(), bed.footX(), bed.footY(), bed.footZ());
-            if (bed.destroyed()) {
-                td.bedAlive = false;
+            if (bed.team() == TeamColor.UNKNOWN || bed.destroyed()) {
+                if (bed.team() != TeamColor.UNKNOWN && bed.destroyed()) {
+                    dossierFor(bed.team()).bedAlive = false;
+                }
                 continue;
             }
             if (!level.hasChunk(bed.x() >> 4, bed.z() >> 4)) {
                 continue;
             }
+            TeamDossier td = dossierFor(bed.team());
+            // Verify a BedBlock still physically exists here so broken/ghost beds never produce phantom 0L AIR scans
+            if (!(level.getBlockState(mut.set(bed.x(), bed.y(), bed.z())).getBlock() instanceof BedBlock)) {
+                mapCore.markBedDestroyedAt(bed.x(), bed.y(), bed.z());
+                td.bedAlive = false;
+                continue;
+            }
+            if (!scannedTeamsThisPass.add(bed.team())) {
+                continue;
+            }
+
+            td.updateBedPos(bed.x(), bed.y(), bed.z(), bed.footX(), bed.footY(), bed.footZ());
             BedShellScan scan = BedwarsDefensePlanner.scanBedDefenseShell(
                     bed.x(), bed.y(), bed.z(),
                     bed.footX(), bed.footY(), bed.footZ(),
                     4, ToolProfile.bareHand(), classifier);
 
-            boolean changed = td.lastDefenseScan == null
-                    || td.lastDefenseScan.layersDetected() != scan.layersDetected()
-                    || td.lastDefenseScan.hardestBlock() != scan.hardestBlock()
-                    || !td.lastDefenseScan.counts().equals(scan.counts());
-
-            td.updateDefense(scan, tick);
-            if (changed && bus != null) {
-                bus.publish(new MatchEvent.BedDefenseObservedEvent(
-                        tick,
-                        bed.team(),
-                        scan.layersDetected(),
-                        scan.hardestBlock(),
-                        scan.counts().getOrDefault(DefenseBlockKind.WOOL, 0),
-                        scan.counts().getOrDefault(DefenseBlockKind.WOOD, 0),
-                        scan.counts().getOrDefault(DefenseBlockKind.ENDSTONE, 0),
-                        scan.counts().getOrDefault(DefenseBlockKind.GLASS, 0),
-                        scan.counts().getOrDefault(DefenseBlockKind.OBSIDIAN, 0),
-                        scan.estimatedClearTicks()));
+            long posKey = packPos(bed.x(), bed.y(), bed.z());
+            BedShellScan prev = lastScanByBedPos.get(posKey);
+            if (!sameScan(prev, scan)) {
+                lastScanByBedPos.put(posKey, scan);
+                td.updateDefense(scan, tick);
+                if (bus != null) {
+                    bus.publish(new MatchEvent.BedDefenseObservedEvent(
+                            tick,
+                            bed.team(),
+                            scan.layersDetected(),
+                            scan.hardestBlock(),
+                            scan.counts().getOrDefault(DefenseBlockKind.WOOL, 0),
+                            scan.counts().getOrDefault(DefenseBlockKind.WOOD, 0),
+                            scan.counts().getOrDefault(DefenseBlockKind.ENDSTONE, 0),
+                            scan.counts().getOrDefault(DefenseBlockKind.GLASS, 0),
+                            scan.counts().getOrDefault(DefenseBlockKind.OBSIDIAN, 0),
+                            scan.estimatedClearTicks()));
+                }
             }
         }
+    }
+
+    private static boolean sameScan(BedShellScan a, BedShellScan b) {
+        if (a == null || b == null) {
+            return false;
+        }
+        return a.layersDetected() == b.layersDetected()
+                && a.hardestBlock() == b.hardestBlock()
+                && a.counts().equals(b.counts());
+    }
+
+    private static long packPos(int x, int y, int z) {
+        return (((long) x & 0x3FFFFFFL) << 38) | (((long) z & 0x3FFFFFFL) << 12) | ((long) y & 0xFFFL);
     }
 
     private static DefenseBlockKind classifyBlock(ClientLevel level, BedwarsMapCore mapCore, BlockPos.MutableBlockPos pos) {

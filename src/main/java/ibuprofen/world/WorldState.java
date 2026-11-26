@@ -62,6 +62,7 @@ public final class WorldState {
     private final Queue<BlockChange> pendingBlocks = new ConcurrentLinkedQueue<>();
 
     private long tickCount = 0;
+    private long matchStartTick = -1L;
     private boolean lastMatchStarted = false;
     private String lastPhaseName = "";
     private TeamColor lastTeam = TeamColor.UNKNOWN;
@@ -107,16 +108,24 @@ public final class WorldState {
 
     /**
      * Handles {@code setLevel}: mid-match respawns preserve map & match memory;
-     * real lobby/hub changes perform a full reset.
+     * real lobby/hub changes stop any active debug log and perform a full reset.
      */
-    public void onLevelSwap(MatchEventBus bus) {
-        if (matchState.isMatchStarted() && !matchState.isMatchEnded()) {
+    public void onLevelSwap(MatchEventBus bus, DebugRecorder recorder) {
+        TeamColor home = matchState.getHomeTeam();
+        boolean activeAliveMatch = matchState.isMatchStarted()
+                && !matchState.isMatchEnded()
+                && (home == TeamColor.UNKNOWN || !matchState.isTeamEliminated(home))
+                && matchState.getNextPhase() != MatchPhase.PRE_GAME;
+        if (activeAliveMatch) {
             snapshot.clearTransientVelocities();
             pendingBlocks.clear();
             if (bus != null) {
                 bus.publish(new MatchEvent.MatchLifecycleEvent(tickCount, "respawn", "mid_match_respawn"));
             }
             return;
+        }
+        if (recorder != null && recorder.isRecording()) {
+            recorder.stopSession("level_change");
         }
         onFullReset(bus, "level_change");
     }
@@ -132,6 +141,7 @@ public final class WorldState {
         pendingActionBars.clear();
         pendingTabList.clear();
         pendingBlocks.clear();
+        matchStartTick = -1L;
         lastMatchStarted = false;
         lastPhaseName = "";
         lastTeam = TeamColor.UNKNOWN;
@@ -203,7 +213,7 @@ public final class WorldState {
         }
 
         // 1. Drain chat / title / subtitle / actionbar / tablist packets into MatchState & MatchEventBus
-        drainChat(bus, nowMs);
+        drainChat(bus, recorder, nowMs);
         drainHudPackets(bus);
 
         // 2. Drain single-block updates
@@ -215,7 +225,7 @@ public final class WorldState {
 
         // 3. Refresh scoreboard at 4 Hz
         if ((tickCount % 5L) == 0L) {
-            refreshScoreboard(level, bus);
+            refreshScoreboard(level, bus, recorder);
         }
 
         // 4. Single-pass entity + true-velocity + gear + inventory snapshot
@@ -241,14 +251,21 @@ public final class WorldState {
         }
     }
 
-    private void drainChat(MatchEventBus bus, long nowMs) {
+    private void drainChat(MatchEventBus bus, DebugRecorder recorder, long nowMs) {
         String line;
         while ((line = pendingChat.poll()) != null) {
+            String lower = line.toLowerCase(Locale.ROOT);
+            if (lastMatchStarted && matchStartTick >= 0 && (tickCount - matchStartTick) > 100L
+                    && isNewMatchOrLobbyMessage(lower)) {
+                if (recorder != null && recorder.isRecording()) {
+                    recorder.stopSession("new_match");
+                }
+                onFullReset(bus, "new_match_chat");
+            }
             ParsedChatOutcome outcome = matchState.onChatMessage(line, nowMs);
             if (bus == null) {
                 continue;
             }
-            String lower = line.toLowerCase(Locale.ROOT);
             if (outcome.destroyedBedTeam() != TeamColor.UNKNOWN) {
                 mapCore.markTeamBedDestroyed(outcome.destroyedBedTeam());
                 bus.publish(new MatchEvent.BedBrokenEvent(tickCount, outcome.destroyedBedTeam(), line));
@@ -373,7 +390,17 @@ public final class WorldState {
         }
     }
 
-    private void refreshScoreboard(ClientLevel level, MatchEventBus bus) {
+    private static boolean isNewMatchOrLobbyMessage(String lower) {
+        return lower.contains("has joined! (")
+                || lower.contains("will start in")
+                || lower.contains("game starts in")
+                || lower.contains("starting in")
+                || lower.contains("you are now in team")
+                || lower.contains("goodluck with your bedwars game")
+                || lower.contains("the game has started");
+    }
+
+    private void refreshScoreboard(ClientLevel level, MatchEventBus bus, DebugRecorder recorder) {
         Scoreboard sb = level.getScoreboard();
         Objective sidebar = sb.getDisplayObjective(DisplaySlot.SIDEBAR);
         if (sidebar == null) {
@@ -392,10 +419,14 @@ public final class WorldState {
                 lines.add(full);
             }
         }
-        boolean wasEnded = matchState.isMatchEnded();
+        boolean wasStarted = matchState.isMatchStarted();
         matchState.updateScoreboard(title, lines);
-        if (wasEnded && matchState.getNextPhase() == MatchPhase.PRE_GAME) {
-            onFullReset(bus, "new_lobby_after_match");
+        if (wasStarted && (matchState.getNextPhase() == MatchPhase.PRE_GAME
+                || !title.toLowerCase(Locale.ROOT).contains("bed"))) {
+            if (recorder != null && recorder.isRecording()) {
+                recorder.stopSession("lobby_transition");
+            }
+            onFullReset(bus, "lobby_transition");
         }
     }
 
@@ -405,6 +436,7 @@ public final class WorldState {
         TeamColor team = matchState.getHomeTeam();
 
         if (started && !lastMatchStarted) {
+            matchStartTick = tickCount;
             if (autoRecord && recorder != null && !recorder.isRecording()) {
                 recorder.startSession(team != TeamColor.UNKNOWN ? team.name().toLowerCase(Locale.ROOT) : "bedwars");
             }

@@ -41,6 +41,7 @@ public final class DebugRecorder {
 
     public DebugRecorder(Path baseDir) {
         this.logDir = baseDir.resolve("ibuprofen").resolve("debug_logs");
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> stopSession("jvm_shutdown"), "ibuprofen-debug-shutdown"));
     }
 
     public synchronized Path startSession(String tag) {
