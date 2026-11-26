@@ -92,9 +92,8 @@ public final class IbuMenuScreen extends Screen {
         int right = left + PANEL_W;
         int bottom = top + PANEL_H;
 
-        // 1. Native MC 26.3 Gaussian blur + subtle vignette backdrop
-        gfx.blurBeforeThisStratum();
-        gfx.fill(0, 0, this.width, this.height, 0x6604070E);
+        // 1. Subtle dark vignette backdrop (MC 26.3 already blurs screen stratum once per frame)
+        gfx.fill(0, 0, this.width, this.height, 0x6E04070E);
 
         // 2. Floating rounded dark-glass window + soft layered shadow
         UiDraw.drawShadow(gfx, left, top, PANEL_W, PANEL_H, 10, 7);
