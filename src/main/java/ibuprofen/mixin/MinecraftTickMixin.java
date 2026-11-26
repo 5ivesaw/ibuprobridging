@@ -26,7 +26,7 @@ public final class MinecraftTickMixin {
     private void ibuprofen$onSetLevel(ClientLevel newLevel, CallbackInfo ci) {
         IbuprofenMod mod = IbuprofenMod.get();
         if (mod != null) {
-            mod.onWorldChange(newLevel == null ? "disconnect" : "level_change");
+            mod.onWorldChange(newLevel == null);
         }
     }
 }

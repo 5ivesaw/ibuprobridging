@@ -2,6 +2,7 @@ package ibuprofen.mixin;
 
 import ibuprofen.IbuprofenMod;
 import ibuprofen.world.WorldState;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
@@ -37,6 +38,9 @@ public final class ClientPacketListenerMixin {
 
     @Inject(method = "handleSystemChat", at = @At("HEAD"))
     private void ibuprofen$onSystemChat(ClientboundSystemChatPacket packet, CallbackInfo ci) {
+        if (!Minecraft.getInstance().isSameThread()) {
+            return;
+        }
         IbuprofenMod mod = IbuprofenMod.get();
         if (mod == null || packet == null || packet.content() == null) {
             return;
@@ -51,6 +55,9 @@ public final class ClientPacketListenerMixin {
 
     @Inject(method = "handlePlayerChat", at = @At("HEAD"))
     private void ibuprofen$onPlayerChat(ClientboundPlayerChatPacket packet, CallbackInfo ci) {
+        if (!Minecraft.getInstance().isSameThread()) {
+            return;
+        }
         IbuprofenMod mod = IbuprofenMod.get();
         if (mod == null || packet == null) {
             return;
@@ -62,6 +69,9 @@ public final class ClientPacketListenerMixin {
 
     @Inject(method = "handleDisguisedChat", at = @At("HEAD"))
     private void ibuprofen$onDisguisedChat(ClientboundDisguisedChatPacket packet, CallbackInfo ci) {
+        if (!Minecraft.getInstance().isSameThread()) {
+            return;
+        }
         IbuprofenMod mod = IbuprofenMod.get();
         if (mod != null && packet != null && packet.message() != null) {
             mod.worldState().enqueueChat(WorldState.stripColors(packet.message().getString()));
@@ -70,6 +80,9 @@ public final class ClientPacketListenerMixin {
 
     @Inject(method = "setTitleText", at = @At("HEAD"))
     private void ibuprofen$onTitle(ClientboundSetTitleTextPacket packet, CallbackInfo ci) {
+        if (!Minecraft.getInstance().isSameThread()) {
+            return;
+        }
         IbuprofenMod mod = IbuprofenMod.get();
         if (mod != null && packet != null && packet.text() != null) {
             mod.worldState().enqueueTitle(WorldState.stripColors(packet.text().getString()));
@@ -78,6 +91,9 @@ public final class ClientPacketListenerMixin {
 
     @Inject(method = "setSubtitleText", at = @At("HEAD"))
     private void ibuprofen$onSubtitle(ClientboundSetSubtitleTextPacket packet, CallbackInfo ci) {
+        if (!Minecraft.getInstance().isSameThread()) {
+            return;
+        }
         IbuprofenMod mod = IbuprofenMod.get();
         if (mod != null && packet != null && packet.text() != null) {
             mod.worldState().enqueueSubtitle(WorldState.stripColors(packet.text().getString()));
@@ -86,6 +102,9 @@ public final class ClientPacketListenerMixin {
 
     @Inject(method = "setActionBarText", at = @At("HEAD"))
     private void ibuprofen$onActionBar(ClientboundSetActionBarTextPacket packet, CallbackInfo ci) {
+        if (!Minecraft.getInstance().isSameThread()) {
+            return;
+        }
         IbuprofenMod mod = IbuprofenMod.get();
         if (mod != null && packet != null && packet.text() != null) {
             mod.worldState().enqueueActionBar(WorldState.stripColors(packet.text().getString()));
@@ -94,6 +113,9 @@ public final class ClientPacketListenerMixin {
 
     @Inject(method = "handleTabListCustomisation", at = @At("HEAD"))
     private void ibuprofen$onTabList(ClientboundTabListPacket packet, CallbackInfo ci) {
+        if (!Minecraft.getInstance().isSameThread()) {
+            return;
+        }
         IbuprofenMod mod = IbuprofenMod.get();
         if (mod != null && packet != null) {
             String h = packet.header() != null ? WorldState.stripColors(packet.header().getString()) : "";
@@ -104,6 +126,9 @@ public final class ClientPacketListenerMixin {
 
     @Inject(method = "handleLevelChunkWithLight", at = @At("RETURN"))
     private void ibuprofen$onChunkLoaded(ClientboundLevelChunkWithLightPacket packet, CallbackInfo ci) {
+        if (!Minecraft.getInstance().isSameThread()) {
+            return;
+        }
         IbuprofenMod mod = IbuprofenMod.get();
         if (mod != null && packet != null) {
             mod.worldState().onChunkLoaded(packet.x(), packet.z());
@@ -112,6 +137,9 @@ public final class ClientPacketListenerMixin {
 
     @Inject(method = "handleForgetLevelChunk", at = @At("RETURN"))
     private void ibuprofen$onChunkUnloaded(ClientboundForgetLevelChunkPacket packet, CallbackInfo ci) {
+        if (!Minecraft.getInstance().isSameThread()) {
+            return;
+        }
         IbuprofenMod mod = IbuprofenMod.get();
         if (mod != null && packet != null) {
             mod.worldState().onChunkUnloaded(packet.pos().x(), packet.pos().z());
@@ -120,6 +148,9 @@ public final class ClientPacketListenerMixin {
 
     @Inject(method = "handleBlockUpdate", at = @At("RETURN"))
     private void ibuprofen$onBlockUpdate(ClientboundBlockUpdatePacket packet, CallbackInfo ci) {
+        if (!Minecraft.getInstance().isSameThread()) {
+            return;
+        }
         IbuprofenMod mod = IbuprofenMod.get();
         if (mod != null && packet != null) {
             mod.worldState().enqueueBlockChange(packet.getPos(), packet.getBlockState());
@@ -128,6 +159,9 @@ public final class ClientPacketListenerMixin {
 
     @Inject(method = "handleChunkBlocksUpdate", at = @At("RETURN"))
     private void ibuprofen$onMultiBlockUpdate(ClientboundSectionBlocksUpdatePacket packet, CallbackInfo ci) {
+        if (!Minecraft.getInstance().isSameThread()) {
+            return;
+        }
         IbuprofenMod mod = IbuprofenMod.get();
         if (mod == null || packet == null) {
             return;

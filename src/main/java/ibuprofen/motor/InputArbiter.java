@@ -1,6 +1,7 @@
 package ibuprofen.motor;
 
-import ibuprofen.telemetry.DebugRecorder;
+import ibuprofen.event.MatchEvent;
+import ibuprofen.event.MatchEventBus;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 
@@ -61,7 +62,7 @@ public final class InputArbiter {
      * Resolves all 5 channels for this tick and applies look/hotbar to the local player.
      * Key overrides are read directly by KeyboardInputMixin via {@link #getKeyOverride(BodyInput)}.
      */
-    public void commitTick(Minecraft mc, long tick, DebugRecorder recorder) {
+    public void commitTick(Minecraft mc, long tick, MatchEventBus bus) {
         active.clear();
         active.putAll(pending);
         pending.clear();
@@ -73,7 +74,7 @@ public final class InputArbiter {
             effectiveKeys.put(key, false);
         }
 
-        // Detect and log channel ownership transitions
+        // Detect and publish channel ownership transitions on MatchEventBus
         for (BodyChannel ch : BodyChannel.values()) {
             ChannelRequest req = active.get(ch);
             String newOwner = req != null ? req.owner : null;
@@ -81,8 +82,9 @@ public final class InputArbiter {
             if ((oldOwner == null && newOwner != null)
                     || (oldOwner != null && !oldOwner.equals(newOwner))) {
                 lastOwners.put(ch, newOwner);
-                if (recorder != null) {
-                    recorder.logChannelChange(tick, ch.name(), oldOwner, newOwner, req != null ? req.reason : "released");
+                if (bus != null) {
+                    bus.publish(new MatchEvent.ChannelChangedEvent(
+                            tick, ch.name(), oldOwner, newOwner, req != null ? req.reason : "released"));
                 }
             }
         }
@@ -155,7 +157,7 @@ public final class InputArbiter {
     /**
      * Emergency stop: immediately releases all 5 channels back to the human player.
      */
-    public void releaseAll(long tick, DebugRecorder recorder, String reason) {
+    public void releaseAll(long tick, MatchEventBus bus, String reason) {
         pending.clear();
         active.clear();
         anyActive = false;
@@ -164,8 +166,8 @@ public final class InputArbiter {
         }
         for (BodyChannel ch : BodyChannel.values()) {
             String prev = lastOwners.put(ch, null);
-            if (prev != null && recorder != null) {
-                recorder.logChannelChange(tick, ch.name(), prev, null, reason);
+            if (prev != null && bus != null) {
+                bus.publish(new MatchEvent.ChannelChangedEvent(tick, ch.name(), prev, null, reason));
             }
         }
     }

@@ -1,6 +1,10 @@
 package ibuprofen.command;
 
 import ibuprofen.IbuprofenMod;
+import ibuprofen.memory.EnemyDossier;
+import ibuprofen.memory.MatchMemory;
+import ibuprofen.memory.ShoppingWishList;
+import ibuprofen.memory.TeamDossier;
 import ibuprofen.motor.InputArbiter;
 import ibuprofen.telemetry.DebugRecorder;
 import ibuprofen.world.BedwarsMapCore;
@@ -11,7 +15,9 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Local client chat command router for {@code #ibu ...}.
@@ -35,15 +41,14 @@ public final class IbuCommand {
 
         switch (sub) {
             case "status" -> showStatus(mod);
+            case "mem", "memory" -> showMemory(mod);
             case "stop" -> {
-                mod.inputArbiter().releaseAll(mod.worldState().tickCount(), mod.debugRecorder(), "manual_stop");
+                mod.inputArbiter().releaseAll(mod.worldState().tickCount(), mod.eventBus(), "manual_stop");
                 say("Stopped. All 5 body channels returned to human control.");
             }
             case "rec", "record" -> handleRecord(mod, parts);
             case "help" -> showHelp();
-            default -> {
-                say("Unknown command: " + sub + ". Try #ibu help");
-            }
+            default -> say("Unknown command: " + sub + ". Try #ibu help");
         }
         return true;
     }
@@ -57,7 +62,7 @@ public final class IbuCommand {
         DebugRecorder rec = mod.debugRecorder();
 
         String mapName = ms.getMapName() != null && !ms.getMapName().isBlank() ? ms.getMapName() : "unknown";
-        say("=== Ibuprobridging Phase 0 Status ===");
+        say("=== Ibuprobridging Phase 0.5 Status ===");
         say("Match: " + (ms.isMatchStarted() ? "LIVE" : "LOBBY/IDLE")
                 + " | Map: " + mapName
                 + " | Team: " + ms.getHomeTeam()
@@ -85,6 +90,46 @@ public final class IbuCommand {
             say("DebugRec: ON (" + rec.lineCount() + " lines, ~" + kb + " KB raw, gzipped on disk)");
         } else {
             say("DebugRec: OFF (autoRecord=" + ws.isAutoRecord() + ")");
+        }
+    }
+
+    private static void showMemory(IbuprofenMod mod) {
+        MatchMemory mem = mod.matchMemory();
+        long tick = mod.worldState().tickCount();
+        say("=== Ibuprobridging MatchMemory ===");
+
+        Map<BedwarsMapCore.TeamColor, TeamDossier> teams = mem.getAllTeamDossiers();
+        if (teams.isEmpty()) {
+            say("Beds remembered: none yet");
+        } else {
+            say("Beds remembered:");
+            for (TeamDossier td : teams.values()) {
+                say("  " + td.summaryString(tick));
+            }
+        }
+
+        Map<String, EnemyDossier> enemies = mem.getAllEnemyDossiers();
+        if (!enemies.isEmpty()) {
+            say("Enemies remembered (" + enemies.size() + "):");
+            int shown = 0;
+            for (EnemyDossier ed : enemies.values()) {
+                if (shown++ >= 5) {
+                    say("  ... (+" + (enemies.size() - 5) + " more)");
+                    break;
+                }
+                say("  " + ed.summaryString(tick));
+            }
+        }
+
+        List<ShoppingWishList.WishItem> wish = mem.computeWishList();
+        if (wish.isEmpty()) {
+            say("Shopping Wish List: empty");
+        } else {
+            say("Shopping Wish List:");
+            for (int i = 0; i < Math.min(5, wish.size()); i++) {
+                ShoppingWishList.WishItem w = wish.get(i);
+                say("  [" + w.priority() + "] " + w.itemId() + " <- " + w.reason());
+            }
         }
     }
 
@@ -136,8 +181,9 @@ public final class IbuCommand {
     }
 
     private static void showHelp() {
-        say("=== Ibuprobridging Commands (Phase 0) ===");
+        say("=== Ibuprobridging Commands (Phase 0.5) ===");
         say("#ibu status        - Show map, team, beds, gens, shops, enemies & channels");
+        say("#ibu mem           - Show remembered bed defenses, enemy gear & shopping wish list");
         say("#ibu rec start     - Start lightweight .jsonl.gz debug log");
         say("#ibu rec stop      - Stop and flush debug log");
         say("#ibu rec auto      - Toggle auto-recording when a BedWars match starts");

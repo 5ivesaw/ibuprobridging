@@ -91,7 +91,7 @@ public final class BedwarsMatchState {
             "(?i)(?:you are (?:now )?(?:in|on) team|joined team|team assigned)\\s*[:>-]?\\s*(light[_ ]?blue|aqua|cyan|pink|magenta|light[_ ]?purple|red|blue|green|lime|yellow|white|gray|grey)\\b"
     );
     private static final Pattern BED_DESTROYED_PATTERN = Pattern.compile(
-            "(?i)\\b(aqua|cyan|pink|magenta|red|blue|green|lime|yellow|white|gray|grey)\\s+bed\\b.*?(?:destroyed|broken|eliminated|gone|lost)"
+            "(?i)\\b(aqua|cyan|pink|magenta|red|blue|green|lime|yellow|white|gray|grey)(?:\\s+team(?:'s|s)?)?\\s+bed\\b.*?(?:destroyed|broken|eliminated|gone|lost)"
     );
     private static final Pattern BED_DESTRUCTION_HEADER_PATTERN = Pattern.compile(
             "(?i)bed destruction.*?(?:>|»|:)\\s*(aqua|cyan|pink|magenta|red|blue|green|lime|yellow|white|gray|grey)\\b"

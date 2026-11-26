@@ -1,5 +1,8 @@
 package ibuprofen.telemetry;
 
+import ibuprofen.event.MatchEvent;
+import ibuprofen.event.MatchEvent.JsonUtil;
+
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
@@ -16,15 +19,14 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.zip.GZIPOutputStream;
 
 /**
- * Lightweight, async, gzip-compressed JSONL debug recorder.
- * Built strictly for answering "what happened and why?" during development and live testing
- * without multi-gigabyte ML logs or main-thread disk I/O stalls.
+ * Lightweight, async, gzip-compressed JSONL debug recorder subscribed to {@link ibuprofen.event.MatchEventBus}.
+ * Records exact typed brain/world/control events plus compact periodic heartbeats (~20-150 KB per match).
  */
 public final class DebugRecorder {
 
     private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
     private static final int QUEUE_CAPACITY = 4096;
-    private static final long MAX_UNCOMPRESSED_BYTES = 32L * 1024L * 1024L; // ~2-3 MB gzipped cap per session
+    private static final long MAX_UNCOMPRESSED_BYTES = 32L * 1024L * 1024L;
 
     private final Path logDir;
     private final BlockingQueue<String> queue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
@@ -63,7 +65,7 @@ public final class DebugRecorder {
             writerThread = t;
             t.start();
 
-            logEvent(0, "session_start", "Recording started", "tag=" + safeTag);
+            enqueue(new MatchEvent.SessionEvent(0L, true, safeTag).toJsonLine());
             return target;
         } catch (IOException e) {
             recording.set(false);
@@ -76,7 +78,7 @@ public final class DebugRecorder {
         if (!recording.get()) {
             return;
         }
-        logEvent(0, "session_end", "Recording stopped", reason != null ? reason : "manual");
+        enqueue(new MatchEvent.SessionEvent(0L, false, reason != null ? reason : "manual").toJsonLine());
         recording.set(false);
         Thread t = writerThread;
         if (t != null) {
@@ -87,6 +89,16 @@ public final class DebugRecorder {
             }
         }
         writerThread = null;
+    }
+
+    /**
+     * EventBus subscriber: writes every typed {@link MatchEvent} asynchronously to disk.
+     */
+    public void onEvent(MatchEvent event) {
+        if (!recording.get() || event == null) {
+            return;
+        }
+        enqueue(event.toJsonLine());
     }
 
     public boolean isRecording() {
@@ -109,60 +121,9 @@ public final class DebugRecorder {
         return droppedLines.get();
     }
 
-    public void logEvent(long tick, String type, String summary, String detail) {
-        if (!recording.get()) {
-            return;
-        }
-        StringBuilder sb = new StringBuilder(160);
-        sb.append("{\"t\":").append(tick)
-                .append(",\"ts\":").append(System.currentTimeMillis())
-                .append(",\"k\":\"").append(esc(type))
-                .append("\",\"msg\":\"").append(esc(summary)).append('"');
-        if (detail != null && !detail.isEmpty()) {
-            sb.append(",\"d\":\"").append(esc(detail)).append('"');
-        }
-        sb.append('}');
-        enqueue(sb.toString());
-    }
-
-    public void logChannelChange(long tick, String channel, String fromOwner, String toOwner, String reason) {
-        if (!recording.get()) {
-            return;
-        }
-        StringBuilder sb = new StringBuilder(160);
-        sb.append("{\"t\":").append(tick)
-                .append(",\"k\":\"ch\",\"ch\":\"").append(esc(channel))
-                .append("\",\"from\":\"").append(esc(fromOwner != null ? fromOwner : "human"))
-                .append("\",\"to\":\"").append(esc(toOwner != null ? toOwner : "human"))
-                .append("\",\"why\":\"").append(esc(reason)).append("\"}");
-        enqueue(sb.toString());
-    }
-
-    public void logSkillOutcome(long tick, String skill, String outcome, String reason) {
-        if (!recording.get()) {
-            return;
-        }
-        StringBuilder sb = new StringBuilder(160);
-        sb.append("{\"t\":").append(tick)
-                .append(",\"k\":\"skill\",\"s\":\"").append(esc(skill))
-                .append("\",\"out\":\"").append(esc(outcome))
-                .append("\",\"why\":\"").append(esc(reason)).append("\"}");
-        enqueue(sb.toString());
-    }
-
-    public void logSlowTick(long tick, double elapsedMs, String detail) {
-        if (!recording.get()) {
-            return;
-        }
-        StringBuilder sb = new StringBuilder(140);
-        sb.append("{\"t\":").append(tick)
-                .append(",\"k\":\"slow\",\"ms\":").append(String.format(java.util.Locale.ROOT, "%.2f", elapsedMs))
-                .append(",\"d\":\"").append(esc(detail)).append("\"}");
-        enqueue(sb.toString());
-    }
-
     /**
      * Compact periodic state heartbeat: 2 Hz when idle, 10 Hz when any bot channel is active.
+     * Includes resources {@code res:[iron,gold,dia,em,blk]} and nearest enemy {@code near:["name",dist]}.
      */
     public void maybeLogHeartbeat(
             long tick,
@@ -170,7 +131,9 @@ public final class DebugRecorder {
             double x, double y, double z,
             float yaw, float pitch, float hp,
             String phase, String team,
-            int enemiesNear, String channelsSummary) {
+            int enemiesNear, String channelsSummary,
+            int iron, int gold, int dia, int em, int blocks,
+            String nearestEnemyName, double nearestEnemyDist) {
         if (!recording.get()) {
             return;
         }
@@ -180,16 +143,22 @@ public final class DebugRecorder {
         }
         lastHeartbeatTick = tick;
 
-        StringBuilder sb = new StringBuilder(220);
+        StringBuilder sb = new StringBuilder(260);
         sb.append("{\"t\":").append(tick)
                 .append(",\"k\":\"hb\"")
                 .append(",\"p\":[").append(round1(x)).append(',').append(round1(y)).append(',').append(round1(z)).append(']')
                 .append(",\"r\":[").append(round1(yaw)).append(',').append(round1(pitch)).append(']')
                 .append(",\"hp\":").append(round1(hp))
-                .append(",\"ph\":\"").append(esc(phase))
-                .append("\",\"tm\":\"").append(esc(team))
+                .append(",\"ph\":\"").append(JsonUtil.esc(phase))
+                .append("\",\"tm\":\"").append(JsonUtil.esc(team))
                 .append("\",\"en\":").append(enemiesNear)
-                .append(",\"ch\":\"").append(esc(channelsSummary)).append("\"}");
+                .append(",\"res\":[").append(iron).append(',').append(gold).append(',').append(dia)
+                .append(',').append(em).append(',').append(blocks).append(']');
+        if (nearestEnemyName != null && !nearestEnemyName.isEmpty()) {
+            sb.append(",\"near\":[\"").append(JsonUtil.esc(nearestEnemyName)).append("\",")
+                    .append(round1(nearestEnemyDist)).append(']');
+        }
+        sb.append(",\"ch\":\"").append(JsonUtil.esc(channelsSummary)).append("\"}");
         enqueue(sb.toString());
     }
 
@@ -232,28 +201,5 @@ public final class DebugRecorder {
         }
         String clean = tag.replaceAll("[^a-zA-Z0-9_-]", "_");
         return clean.length() > 24 ? clean.substring(0, 24) : clean;
-    }
-
-    private static String esc(String s) {
-        if (s == null) {
-            return "";
-        }
-        StringBuilder out = new StringBuilder(s.length());
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            switch (c) {
-                case '"' -> out.append("\\\"");
-                case '\\' -> out.append("\\\\");
-                case '\n' -> out.append("\\n");
-                case '\r' -> out.append("\\r");
-                case '\t' -> out.append("\\t");
-                default -> {
-                    if (c >= 0x20) {
-                        out.append(c);
-                    }
-                }
-            }
-        }
-        return out.toString();
     }
 }

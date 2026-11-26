@@ -1,10 +1,15 @@
 package ibuprofen.world;
 
+import ibuprofen.event.MatchEvent;
+import ibuprofen.event.MatchEventBus;
+import ibuprofen.memory.MatchMemory;
 import ibuprofen.telemetry.DebugRecorder;
 import ibuprofen.world.BedwarsMapCore.GenPOI;
 import ibuprofen.world.BedwarsMapCore.GenType;
 import ibuprofen.world.BedwarsMapCore.ShopNPC;
 import ibuprofen.world.BedwarsMapCore.TeamColor;
+import ibuprofen.world.BedwarsMatchState.MatchPhase;
+import ibuprofen.world.BedwarsMatchState.ParsedChatOutcome;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
@@ -22,20 +27,33 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Layer 1 Shared Blackboard.
- * Updated ONCE at the start of every client tick. Holds map memory, match state,
- * single-pass entity/velocity snapshot, and fast incremental chunk scanning.
+ * Updated ONCE at the start of every client tick. Publishes typed {@link MatchEvent}s
+ * onto {@link MatchEventBus} and preserves arena/match memory across mid-match respawns.
  */
 public final class WorldState {
+
+    private static final Pattern KILL_LINE_PATTERN = Pattern.compile(
+            "^(?:\\[[^\\]]+\\]\\s*)?([A-Za-z0-9_]{2,16})\\s+(?:has been killed by|was killed by|was slain by|was knocked into the void by|was thrown into the void by|was pushed into the void by|was shot by|was blown up by)\\s+([A-Za-z0-9_]{2,16})",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern SOLO_DEATH_PATTERN = Pattern.compile(
+            "^(?:\\[[^\\]]+\\]\\s*)?([A-Za-z0-9_]{2,16})\\s+(?:fell into the void|died|burnt|drowned)",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern BUYER_PATTERN = Pattern.compile(
+            "(?i)([A-Za-z0-9_]{2,16})\\s+(?:purchased|unlocked|bought)\\s+(.+)$"
+    );
 
     private BedwarsMapCore mapCore = createCenteredMapCore(0, 0);
     private final BedwarsMatchState matchState = new BedwarsMatchState();
     private final TickSnapshot snapshot = new TickSnapshot();
     private final ArenaScanner scanner = new ArenaScanner();
 
-    // Thread-safe packet ingestion queues (drained once per tick on main thread)
     private final Queue<String> pendingChat = new ConcurrentLinkedQueue<>();
     private final Queue<String> pendingTitles = new ConcurrentLinkedQueue<>();
     private final Queue<String> pendingSubtitles = new ConcurrentLinkedQueue<>();
@@ -47,6 +65,8 @@ public final class WorldState {
     private boolean lastMatchStarted = false;
     private String lastPhaseName = "";
     private TeamColor lastTeam = TeamColor.UNKNOWN;
+    private String lastPublishedTitle = "";
+    private long lastPublishedTitleTick = -100L;
     private boolean autoRecord = true;
 
     private record BlockChange(BlockPos pos, BlockState state) {}
@@ -85,7 +105,23 @@ public final class WorldState {
         this.autoRecord = autoRecord;
     }
 
-    public void onWorldReset(DebugRecorder recorder, String reason) {
+    /**
+     * Handles {@code setLevel}: mid-match respawns preserve map & match memory;
+     * real lobby/hub changes perform a full reset.
+     */
+    public void onLevelSwap(MatchEventBus bus) {
+        if (matchState.isMatchStarted() && !matchState.isMatchEnded()) {
+            snapshot.clearTransientVelocities();
+            pendingBlocks.clear();
+            if (bus != null) {
+                bus.publish(new MatchEvent.MatchLifecycleEvent(tickCount, "respawn", "mid_match_respawn"));
+            }
+            return;
+        }
+        onFullReset(bus, "level_change");
+    }
+
+    public void onFullReset(MatchEventBus bus, String reason) {
         mapCore = createCenteredMapCore(0, 0);
         matchState.reset();
         snapshot.clear();
@@ -99,8 +135,10 @@ public final class WorldState {
         lastMatchStarted = false;
         lastPhaseName = "";
         lastTeam = TeamColor.UNKNOWN;
-        if (recorder != null && recorder.isRecording()) {
-            recorder.logEvent(tickCount, "world_reset", "World changed/reset", reason);
+        lastPublishedTitle = "";
+        lastPublishedTitleTick = -100L;
+        if (bus != null) {
+            bus.publish(new MatchEvent.MatchLifecycleEvent(tickCount, "world_reset", reason));
         }
     }
 
@@ -146,10 +184,7 @@ public final class WorldState {
         scanner.onChunkUnloaded(cx, cz);
     }
 
-    /**
-     * Runs once at the start of every client tick.
-     */
-    public void tick(Minecraft mc, DebugRecorder recorder) {
+    public void tick(Minecraft mc, MatchEventBus bus, DebugRecorder recorder, MatchMemory matchMemory) {
         tickCount++;
         ClientLevel level = mc.level;
         LocalPlayer player = mc.player;
@@ -167,30 +202,9 @@ public final class WorldState {
             scanner.reset();
         }
 
-        // 1. Drain chat / title / subtitle / actionbar / tablist packets
-        String line;
-        while ((line = pendingChat.poll()) != null) {
-            matchState.onChatMessage(line, nowMs);
-            if (recorder != null && recorder.isRecording() && isImportantChat(line)) {
-                recorder.logEvent(tickCount, "chat", line, null);
-            }
-        }
-        while ((line = pendingTitles.poll()) != null) {
-            matchState.onTitle(line);
-            if (recorder != null && recorder.isRecording()) {
-                recorder.logEvent(tickCount, "title", line, null);
-            }
-        }
-        while ((line = pendingSubtitles.poll()) != null) {
-            matchState.onSubtitle(line);
-        }
-        while ((line = pendingActionBars.poll()) != null) {
-            matchState.onActionBar(line);
-        }
-        String[] tab;
-        while ((tab = pendingTabList.poll()) != null) {
-            matchState.onTabListHeaderFooter(tab[0], tab[1]);
-        }
+        // 1. Drain chat / title / subtitle / actionbar / tablist packets into MatchState & MatchEventBus
+        drainChat(bus, nowMs);
+        drainHudPackets(bus);
 
         // 2. Drain single-block updates
         BlockChange bc;
@@ -201,48 +215,122 @@ public final class WorldState {
 
         // 3. Refresh scoreboard at 4 Hz
         if ((tickCount % 5L) == 0L) {
-            refreshScoreboard(level);
+            refreshScoreboard(level, bus);
         }
 
-        // 4. Single-pass entity + true-velocity + inventory snapshot
+        // 4. Single-pass entity + true-velocity + gear + inventory snapshot
         snapshot.update(level, player, matchState, tickCount);
 
-        // 5. Feed generator holograms (including bare "Spawns in Xs" lines near indexed gens)
-        feedGeneratorHolograms(nowMs);
+        // 5. Feed generator holograms into MatchState, MapCore, and MatchMemory clocks
+        feedGeneratorHolograms(nowMs, matchMemory);
 
         // 6. Register discovered shopkeepers in mapCore
         for (TickSnapshot.ShopKeeperInfo sk : snapshot.shopKeepers) {
-            String label = sk.role + ":NPC";
-            mapCore.addOrUpdateShopNpc(new ShopNPC(label, sk.pos.getX(), sk.pos.getY(), sk.pos.getZ()));
+            mapCore.addOrUpdateShopNpc(new ShopNPC(sk.role + ":NPC", sk.pos.getX(), sk.pos.getY(), sk.pos.getZ()));
         }
 
         // 7. Fast incremental chunk scan (budgeted: 2 chunks/tick max, skips air sections)
         scanner.tickScan(level, mapCore, pPos);
 
         // 8. Detect match transitions & auto-record
-        detectTransitions(recorder);
+        detectTransitions(bus, recorder);
 
         double elapsedMs = (System.nanoTime() - startNs) / 1_000_000.0;
-        if (elapsedMs > 20.0 && recorder != null && recorder.isRecording()) {
-            recorder.logSlowTick(tickCount, elapsedMs, "worldstate_tick");
+        if (elapsedMs > 20.0 && bus != null) {
+            bus.publish(new MatchEvent.SlowTickEvent(tickCount, elapsedMs, "worldstate_tick"));
         }
     }
 
-    private void feedGeneratorHolograms(long nowMs) {
+    private void drainChat(MatchEventBus bus, long nowMs) {
+        String line;
+        while ((line = pendingChat.poll()) != null) {
+            ParsedChatOutcome outcome = matchState.onChatMessage(line, nowMs);
+            if (bus == null) {
+                continue;
+            }
+            String lower = line.toLowerCase(Locale.ROOT);
+            if (outcome.destroyedBedTeam() != TeamColor.UNKNOWN) {
+                mapCore.markTeamBedDestroyed(outcome.destroyedBedTeam());
+                bus.publish(new MatchEvent.BedBrokenEvent(tickCount, outcome.destroyedBedTeam(), line));
+                continue;
+            }
+            if (BedwarsMatchState.isTrapTriggeredText(lower)) {
+                bus.publish(new MatchEvent.TrapTriggeredEvent(tickCount, line));
+                continue;
+            }
+            Matcher buyMatcher = BUYER_PATTERN.matcher(line);
+            if (buyMatcher.find() && (lower.contains("upgrade") || lower.contains("trap")
+                    || lower.contains("armor") || lower.contains("sword")
+                    || lower.contains("heal pool") || lower.contains("forge") || lower.contains("miner"))) {
+                bus.publish(new MatchEvent.UpgradePurchasedEvent(tickCount, buyMatcher.group(1), buyMatcher.group(2).trim()));
+                continue;
+            }
+            MatchEvent.PlayerKillEvent killEv = parseKillEvent(line, lower, outcome.finalKillEvent());
+            if (killEv != null) {
+                bus.publish(killEv);
+                continue;
+            }
+            if (outcome.matchStarted() || outcome.countdownActive()
+                    || lower.contains("eliminated") || lower.contains("generators are now")
+                    || lower.contains("tier ii") || lower.contains("tier iii")
+                    || lower.contains("victory") || lower.contains("game over")) {
+                bus.publish(new MatchEvent.ChatNoticeEvent(tickCount, line));
+            }
+        }
+    }
+
+    private MatchEvent.PlayerKillEvent parseKillEvent(String line, String lower, boolean isFinal) {
+        boolean isVoid = lower.contains("void");
+        Matcher km = KILL_LINE_PATTERN.matcher(line);
+        if (km.find()) {
+            return new MatchEvent.PlayerKillEvent(tickCount, km.group(1), km.group(2), isFinal, isVoid, line);
+        }
+        Matcher sm = SOLO_DEATH_PATTERN.matcher(line);
+        if (sm.find()) {
+            return new MatchEvent.PlayerKillEvent(tickCount, sm.group(1), "", isFinal, isVoid, line);
+        }
+        return null;
+    }
+
+    private void drainHudPackets(MatchEventBus bus) {
+        String title;
+        while ((title = pendingTitles.poll()) != null) {
+            matchState.onTitle(title);
+            if (bus != null && (!title.equals(lastPublishedTitle) || (tickCount - lastPublishedTitleTick) >= 60L)) {
+                lastPublishedTitle = title;
+                lastPublishedTitleTick = tickCount;
+                bus.publish(new MatchEvent.TitleChangedEvent(tickCount, title));
+            }
+        }
+        String sub;
+        while ((sub = pendingSubtitles.poll()) != null) {
+            matchState.onSubtitle(sub);
+        }
+        String bar;
+        while ((bar = pendingActionBars.poll()) != null) {
+            matchState.onActionBar(bar);
+        }
+        String[] tab;
+        while ((tab = pendingTabList.poll()) != null) {
+            matchState.onTabListHeaderFooter(tab[0], tab[1]);
+        }
+    }
+
+    private void feedGeneratorHolograms(long nowMs, MatchMemory matchMemory) {
         if (snapshot.holograms.isEmpty()) {
             return;
         }
-        // Pass A: register explicit Diamond / Emerald header holograms
         for (TickSnapshot.HologramInfo h : snapshot.holograms) {
             if (h.lowerText.contains("diamond")) {
                 matchState.onGeneratorHologram(h.pos.getX(), h.pos.getZ(), GenType.DIAMOND, h.text, nowMs);
                 mapCore.ensureGeneratorIndexed(GenType.DIAMOND, h.pos.getX(), h.pos.getY(), h.pos.getZ(), "DIAMOND");
+                recordGenClockIfTimer(GenType.DIAMOND, h, nowMs, matchMemory);
             } else if (h.lowerText.contains("emerald")) {
                 matchState.onGeneratorHologram(h.pos.getX(), h.pos.getZ(), GenType.EMERALD, h.text, nowMs);
                 mapCore.ensureGeneratorIndexed(GenType.EMERALD, h.pos.getX(), h.pos.getY(), h.pos.getZ(), "EMERALD");
+                recordGenClockIfTimer(GenType.EMERALD, h, nowMs, matchMemory);
             }
         }
-        // Pass B: pair bare countdown/tier holograms ("Spawns in 12 seconds") to nearest Diamond/Emerald gen within 4m
         GenPOI[] gens = mapCore.getGensSnapshot();
         if (gens.length == 0) {
             return;
@@ -270,11 +358,22 @@ public final class WorldState {
             }
             if (bestType != null) {
                 matchState.onGeneratorHologram(h.pos.getX(), h.pos.getZ(), bestType, h.text, nowMs);
+                recordGenClockIfTimer(bestType, h, nowMs, matchMemory);
             }
         }
     }
 
-    private void refreshScoreboard(ClientLevel level) {
+    private static void recordGenClockIfTimer(GenType type, TickSnapshot.HologramInfo h, long nowMs, MatchMemory mem) {
+        if (mem == null) {
+            return;
+        }
+        int secs = BedwarsMatchState.extractSeconds(h.text);
+        if (secs >= 0) {
+            mem.recordGeneratorTimer(type, h.pos.getX(), h.pos.getZ(), secs, nowMs);
+        }
+    }
+
+    private void refreshScoreboard(ClientLevel level, MatchEventBus bus) {
         Scoreboard sb = level.getScoreboard();
         Objective sidebar = sb.getDisplayObjective(DisplaySlot.SIDEBAR);
         if (sidebar == null) {
@@ -293,10 +392,14 @@ public final class WorldState {
                 lines.add(full);
             }
         }
+        boolean wasEnded = matchState.isMatchEnded();
         matchState.updateScoreboard(title, lines);
+        if (wasEnded && matchState.getNextPhase() == MatchPhase.PRE_GAME) {
+            onFullReset(bus, "new_lobby_after_match");
+        }
     }
 
-    private void detectTransitions(DebugRecorder recorder) {
+    private void detectTransitions(MatchEventBus bus, DebugRecorder recorder) {
         boolean started = matchState.isMatchStarted();
         String phase = matchState.getNextPhase().name();
         TeamColor team = matchState.getHomeTeam();
@@ -305,32 +408,25 @@ public final class WorldState {
             if (autoRecord && recorder != null && !recorder.isRecording()) {
                 recorder.startSession(team != TeamColor.UNKNOWN ? team.name().toLowerCase(Locale.ROOT) : "bedwars");
             }
-            if (recorder != null && recorder.isRecording()) {
-                recorder.logEvent(tickCount, "match_start", "BedWars match started", "team=" + team);
+            if (bus != null) {
+                bus.publish(new MatchEvent.MatchLifecycleEvent(tickCount, "match_start", "team=" + team));
             }
         }
         lastMatchStarted = started;
 
         if (!phase.equals(lastPhaseName)) {
-            if (recorder != null && recorder.isRecording()) {
-                recorder.logEvent(tickCount, "phase", "Next phase -> " + phase, "prev=" + lastPhaseName);
+            if (bus != null) {
+                bus.publish(new MatchEvent.PhaseChangedEvent(tickCount, lastPhaseName, phase));
             }
             lastPhaseName = phase;
         }
 
         if (team != lastTeam) {
-            if (recorder != null && recorder.isRecording()) {
-                recorder.logEvent(tickCount, "team", "Home team -> " + team, null);
+            if (bus != null && team != TeamColor.UNKNOWN) {
+                bus.publish(new MatchEvent.TeamAssignedEvent(tickCount, team));
             }
             lastTeam = team;
         }
-    }
-
-    private static boolean isImportantChat(String line) {
-        String l = line.toLowerCase(Locale.ROOT);
-        return l.contains("bed") || l.contains("eliminated") || l.contains("final kill")
-                || l.contains("diamond") || l.contains("emerald") || l.contains("victory")
-                || l.contains("game over") || l.contains("purchased");
     }
 
     public static String stripColors(String s) {

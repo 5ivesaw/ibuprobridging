@@ -2,7 +2,7 @@
 """
 Lightweight debug log inspector for Ibuprobridging (.jsonl.gz or .jsonl).
 Usage:
-  python3 tools/ibu_inspect.py <path-to-log.jsonl.gz> [--events] [--channels] [--slow]
+  python3 tools/ibu_inspect.py <path-to-log.jsonl.gz> [--all]
 """
 
 import gzip
@@ -16,6 +16,46 @@ def open_log(path: Path):
     if path.suffix == ".gz":
         return gzip.open(path, "rt", encoding="utf-8", errors="replace")
     return path.open("r", encoding="utf-8", errors="replace")
+
+
+def format_event(r: dict) -> str:
+    t = r.get("t", 0)
+    k = r.get("k", "?")
+    if k in ("session_start", "session_end"):
+        return f"[t={t}] {k}: {r.get('msg')} ({r.get('d', '')})"
+    if k == "lifecycle":
+        return f"[t={t}] lifecycle: {r.get('act')} ({r.get('d', '')})"
+    if k == "phase":
+        return f"[t={t}] phase: {r.get('from', '')} -> {r.get('to', '')}"
+    if k == "team":
+        return f"[t={t}] team: {r.get('tm')}"
+    if k == "bed_broken":
+        return f"[t={t}] BED BROKEN ({r.get('tm')}): {r.get('msg')}"
+    if k == "bed_scan":
+        return (
+            f"[t={t}] BED SCAN ({r.get('tm')}): {r.get('lay')}L hardest={r.get('hard')} "
+            f"cnt={r.get('cnt')} clearTicks={r.get('clr')}"
+        )
+    if k == "kill":
+        tag = "FINAL " if r.get("fin") else ""
+        vtag = "VOID " if r.get("void") else ""
+        return f"[t={t}] {tag}{vtag}KILL: {r.get('v')} by {r.get('killer') or 'self'} | {r.get('msg')}"
+    if k == "trap":
+        return f"[t={t}] TRAP: {r.get('msg')}"
+    if k == "upgrade":
+        return f"[t={t}] UPGRADE ({r.get('by')}): {r.get('msg')}"
+    if k == "enemy":
+        return (
+            f"[t={t}] ENEMY {r.get('n')} pos={r.get('p')} arm={r.get('arm')} "
+            f"swd={r.get('swd')} util={r.get('ut')}"
+        )
+    if k == "ch":
+        return f"[t={t}] CH {r.get('ch')}: {r.get('from')} -> {r.get('to')} (why: {r.get('why')})"
+    if k == "skill":
+        return f"[t={t}] SKILL {r.get('s')}: {r.get('out')} ({r.get('why')})"
+    if k == "slow":
+        return f"[t={t}] SLOW {r.get('ms')} ms ({r.get('d')})"
+    return f"[t={t}] {k}: {r.get('msg', r)}"
 
 
 def main() -> int:
@@ -74,22 +114,21 @@ def main() -> int:
     else:
         print("Slow ticks (>20ms): 0")
 
-    print("\n--- Match & System Events ---")
-    for e in (events if show_all else events[:40]):
-        detail = f" ({e['d']})" if e.get("d") else ""
-        print(f"  [t={e.get('t')}] {e.get('k')}: {e.get('msg')}{detail}")
-    if not show_all and len(events) > 40:
-        print(f"  ... ({len(events) - 40} more; pass --all to view)")
+    print("\n--- Match & Memory Events ---")
+    for e in (events if show_all else events[:60]):
+        print(" ", format_event(e))
+    if not show_all and len(events) > 60:
+        print(f"  ... ({len(events) - 60} more; pass --all to view)")
 
     if channels:
         print("\n--- Channel Handoffs ---")
         for c in (channels if show_all else channels[:30]):
-            print(f"  [t={c.get('t')}] {c.get('ch')}: {c.get('from')} -> {c.get('to')} (why: {c.get('why')})")
+            print(" ", format_event(c))
 
     if skills:
         print("\n--- Skill Outcomes ---")
         for s in (skills if show_all else skills[:30]):
-            print(f"  [t={s.get('t')}] {s.get('s')}: {s.get('out')} ({s.get('why')})")
+            print(" ", format_event(s))
 
     return 0
 

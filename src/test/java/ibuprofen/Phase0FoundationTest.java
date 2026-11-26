@@ -1,5 +1,7 @@
 package ibuprofen;
 
+import ibuprofen.event.MatchEvent;
+import ibuprofen.event.MatchEventBus;
 import ibuprofen.motor.BodyChannel;
 import ibuprofen.motor.BodyInput;
 import ibuprofen.motor.ChannelRequest;
@@ -26,8 +28,8 @@ final class Phase0FoundationTest {
     @Test
     void inputArbiterComposesIndependentChannelsWithoutWipingKeys() {
         InputArbiter arbiter = new InputArbiter();
+        MatchEventBus bus = new MatchEventBus();
 
-        // Retreat owns MOVEMENT while Heal owns RMB + HOTBAR simultaneously
         arbiter.request(ChannelRequest.movement(
                 "RetreatSkill", ChannelRequest.PRIORITY_HIGH, "back_to_base",
                 Map.of(BodyInput.MOVE_FORWARD, true, BodyInput.SPRINT, true)));
@@ -36,7 +38,7 @@ final class Phase0FoundationTest {
         arbiter.request(ChannelRequest.hotbar(
                 "HealSkill", ChannelRequest.PRIORITY_SURVIVAL, "select_gapple", 4));
 
-        arbiter.commitTick(null, 1L, null);
+        arbiter.commitTick(null, 1L, bus);
 
         assertEquals("RetreatSkill", arbiter.getOwner(BodyChannel.MOVEMENT));
         assertEquals("HealSkill", arbiter.getOwner(BodyChannel.RMB));
@@ -46,10 +48,9 @@ final class Phase0FoundationTest {
         assertEquals(Boolean.TRUE, arbiter.getKeyOverride(BodyInput.MOVE_FORWARD));
         assertEquals(Boolean.TRUE, arbiter.getKeyOverride(BodyInput.SPRINT));
         assertEquals(Boolean.TRUE, arbiter.getKeyOverride(BodyInput.CLICK_RIGHT));
-        // Unowned LMB channel passes through to human player (null override)
         assertNull(arbiter.getKeyOverride(BodyInput.CLICK_LEFT));
 
-        arbiter.releaseAll(2L, null, "test_stop");
+        arbiter.releaseAll(2L, bus, "test_stop");
         assertFalse(arbiter.isAnyActive());
         assertNull(arbiter.getKeyOverride(BodyInput.MOVE_FORWARD));
     }
@@ -62,13 +63,11 @@ final class Phase0FoundationTest {
         arbiter.commitTick(null, 1L, null);
         assertEquals("SkillA", arbiter.getOwner(BodyChannel.LMB));
 
-        // Equal priority tie keeps SkillA to prevent chatter
         arbiter.request(ChannelRequest.lmb("SkillB", ChannelRequest.PRIORITY_NORMAL, "swing", true));
         arbiter.request(ChannelRequest.lmb("SkillA", ChannelRequest.PRIORITY_NORMAL, "swing", true));
         arbiter.commitTick(null, 2L, null);
         assertEquals("SkillA", arbiter.getOwner(BodyChannel.LMB));
 
-        // Higher priority takes over cleanly
         arbiter.request(ChannelRequest.lmb("SkillA", ChannelRequest.PRIORITY_NORMAL, "swing", true));
         arbiter.request(ChannelRequest.lmb("CombatSkill", ChannelRequest.PRIORITY_HIGH, "attack", true));
         arbiter.commitTick(null, 3L, null);
@@ -76,15 +75,20 @@ final class Phase0FoundationTest {
     }
 
     @Test
-    void debugRecorderWritesCompactGzippedJsonl(@TempDir Path tempDir) throws Exception {
+    void debugRecorderSubscribesToEventBusAndWritesCompactGzippedJsonl(@TempDir Path tempDir) throws Exception {
+        MatchEventBus bus = new MatchEventBus();
         DebugRecorder recorder = new DebugRecorder(tempDir);
+        bus.subscribe(recorder::onEvent);
+
         Path logFile = recorder.startSession("unit_test");
         assertNotNull(logFile);
         assertTrue(recorder.isRecording());
 
-        recorder.logChannelChange(10L, "MOVEMENT", null, "BridgeSkill", "cross_gap");
-        recorder.logSkillOutcome(25L, "BridgeSkill", "DONE", "arrived");
-        recorder.maybeLogHeartbeat(30L, true, 10.5, 64.0, -5.2, 90.0f, 12.0f, 20.0f, "DIAMOND_II", "RED", 1, "MOVEMENT=BridgeSkill");
+        bus.publish(new MatchEvent.ChannelChangedEvent(10L, "MOVEMENT", null, "BridgeSkill", "cross_gap"));
+        bus.publish(new MatchEvent.SkillOutcomeEvent(25L, "BridgeSkill", "DONE", "arrived"));
+        recorder.maybeLogHeartbeat(30L, true, 10.5, 64.0, -5.2, 90.0f, 12.0f, 20.0f,
+                "DIAMOND_II", "RED", 1, "MOVEMENT=BridgeSkill",
+                16, 4, 2, 0, 32, "EnemyOne", 11.4);
         recorder.stopSession("test_complete");
 
         assertFalse(recorder.isRecording());
@@ -102,6 +106,8 @@ final class Phase0FoundationTest {
         String text = content.toString();
         assertTrue(text.contains("session_start"));
         assertTrue(text.contains("BridgeSkill"));
+        assertTrue(text.contains("\"res\":[16,4,2,0,32]"));
+        assertTrue(text.contains("\"near\":[\"EnemyOne\",11.4]"));
         assertTrue(text.contains("session_end"));
     }
 

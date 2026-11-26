@@ -7,6 +7,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.Display;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Blaze;
@@ -41,12 +42,24 @@ public final class TickSnapshot {
         public final double distSq;
         public final float health;
         public final boolean onGround;
+        public final int armorTier;
+        public final int swordTier;
+        public final boolean holdingFireball;
+        public final boolean holdingPearl;
+        public final boolean holdingBow;
+        public final boolean holdingGapple;
+        public final boolean holdingTnt;
+        public final boolean holdingBlocks;
 
         public TrackedPlayer(
                 int entityId, String name, boolean teammate,
                 double x, double y, double z,
                 double vx, double vy, double vz,
-                double distSq, float health, boolean onGround) {
+                double distSq, float health, boolean onGround,
+                int armorTier, int swordTier,
+                boolean holdingFireball, boolean holdingPearl,
+                boolean holdingBow, boolean holdingGapple,
+                boolean holdingTnt, boolean holdingBlocks) {
             this.entityId = entityId;
             this.name = name;
             this.teammate = teammate;
@@ -60,6 +73,14 @@ public final class TickSnapshot {
             this.distSq = distSq;
             this.health = health;
             this.onGround = onGround;
+            this.armorTier = armorTier;
+            this.swordTier = swordTier;
+            this.holdingFireball = holdingFireball;
+            this.holdingPearl = holdingPearl;
+            this.holdingBow = holdingBow;
+            this.holdingGapple = holdingGapple;
+            this.holdingTnt = holdingTnt;
+            this.holdingBlocks = holdingBlocks;
         }
     }
 
@@ -126,6 +147,11 @@ public final class TickSnapshot {
     public void clear() {
         velHistory.clear();
         lastSeenEnemies.clear();
+        resetLists();
+    }
+
+    public void clearTransientVelocities() {
+        velHistory.clear();
         resetLists();
     }
 
@@ -204,11 +230,26 @@ public final class TickSnapshot {
                 }
                 VelSample vel = updateTrueVelocity(e.getId(), ex, ey, ez, currentTick);
                 boolean isTeammate = isSameTeam(self, other, myTeam);
+                int armorTier = inspectArmorTier(other);
+                ItemStack mainHand = other.getMainHandItem();
+                ItemStack offHand = other.getOffhandItem();
+                int swordTier = inspectSwordTier(mainHand);
+                String mainId = itemPath(mainHand);
+                String offId = itemPath(offHand);
+                boolean hFireball = "fire_charge".equals(mainId) || "fire_charge".equals(offId);
+                boolean hPearl = "ender_pearl".equals(mainId) || "ender_pearl".equals(offId);
+                boolean hBow = "bow".equals(mainId) || "bow".equals(offId);
+                boolean hGapple = "golden_apple".equals(mainId) || "golden_apple".equals(offId);
+                boolean hTnt = "tnt".equals(mainId) || "tnt".equals(offId);
+                boolean hBlocks = isPlaceableBlockId(mainId) || isPlaceableBlockId(offId);
+
                 TrackedPlayer tp = new TrackedPlayer(
                         e.getId(), name, isTeammate,
                         ex, ey, ez,
                         vel.emaVx, vel.emaVy, vel.emaVz,
-                        dSq, other.getHealth(), other.onGround());
+                        dSq, other.getHealth(), other.onGround(),
+                        armorTier, swordTier,
+                        hFireball, hPearl, hBow, hGapple, hTnt, hBlocks);
                 if (isTeammate) {
                     teammates.add(tp);
                 } else {
@@ -341,6 +382,39 @@ public final class TickSnapshot {
             return disp.contains(myTeam.name().toLowerCase(Locale.ROOT));
         }
         return false;
+    }
+
+    private static int inspectArmorTier(Player player) {
+        int feet = armorTierFromPath(itemPath(player.getItemBySlot(EquipmentSlot.FEET)));
+        int legs = armorTierFromPath(itemPath(player.getItemBySlot(EquipmentSlot.LEGS)));
+        return Math.max(feet, legs);
+    }
+
+    private static int armorTierFromPath(String path) {
+        if (path.startsWith("diamond_")) return 3;
+        if (path.startsWith("iron_")) return 2;
+        if (path.startsWith("chainmail_")) return 1;
+        return 0;
+    }
+
+    private static int inspectSwordTier(ItemStack stack) {
+        String path = itemPath(stack);
+        if (path.equals("diamond_sword")) return 3;
+        if (path.equals("iron_sword")) return 2;
+        if (path.equals("stone_sword")) return 1;
+        return 0;
+    }
+
+    private static boolean isPlaceableBlockId(String id) {
+        return id.endsWith("_wool") || id.equals("end_stone") || id.endsWith("_planks")
+                || id.endsWith("_terracotta") || id.equals("obsidian");
+    }
+
+    private static String itemPath(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return "";
+        }
+        return BuiltInRegistries.ITEM.getKey(stack.getItem()).getPath();
     }
 
     private static String stripFormatting(String s) {
