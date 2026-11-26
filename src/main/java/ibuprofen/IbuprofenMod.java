@@ -1,5 +1,6 @@
 package ibuprofen;
 
+import com.mojang.blaze3d.platform.InputConstants;
 import ibuprofen.command.IbuCommand;
 import ibuprofen.event.MatchEvent;
 import ibuprofen.event.MatchEventBus;
@@ -8,6 +9,7 @@ import ibuprofen.motor.InputArbiter;
 import ibuprofen.skills.Skill;
 import ibuprofen.skills.SkillResult;
 import ibuprofen.telemetry.DebugRecorder;
+import ibuprofen.ui.IbuMenuScreen;
 import ibuprofen.ui.IbuSettings;
 import ibuprofen.world.TickSnapshot;
 import ibuprofen.world.WorldState;
@@ -38,6 +40,7 @@ public final class IbuprofenMod implements ClientModInitializer {
     private final IbuSettings settings = new IbuSettings();
     private DebugRecorder debugRecorder;
     private Skill activeSkill = null;
+    private boolean menuKeyWasDown = false;
 
     public static IbuprofenMod get() {
         return instance;
@@ -114,8 +117,16 @@ public final class IbuprofenMod implements ClientModInitializer {
      */
     public void onClientTick(Minecraft mc) {
         if (mc == null || mc.level == null || mc.player == null) {
+            menuKeyWasDown = false;
             return;
         }
+        // Rising-edge fallback for '[' menu key in case another mod intercepts KeyboardHandler.keyPress
+        boolean menuKeyDown = InputConstants.isKeyDown(InputConstants.KEY_LBRACKET);
+        if (menuKeyDown && !menuKeyWasDown && mc.gui.screen() == null) {
+            mc.gui.setScreen(new IbuMenuScreen());
+        }
+        menuKeyWasDown = menuKeyDown;
+
         worldState.tick(mc, eventBus, debugRecorder, matchMemory);
         long tick = worldState.tickCount();
         TickSnapshot snap = worldState.snapshot();

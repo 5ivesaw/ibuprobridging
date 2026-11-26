@@ -306,15 +306,47 @@ public final class MatchMemory {
             return DefenseBlockKind.LADDER_SLAB;
         }
         String path = BuiltInRegistries.BLOCK.getKey(block).getPath().toLowerCase(Locale.ROOT);
-        if (path.endsWith("_wool")) return DefenseBlockKind.WOOL;
-        if (path.endsWith("_planks") || path.endsWith("_log") || path.endsWith("_wood")) return DefenseBlockKind.WOOD;
-        if (path.contains("glass")) return DefenseBlockKind.GLASS;
-        if (path.endsWith("_terracotta") || path.equals("terracotta")) return DefenseBlockKind.TERRACOTTA;
-        if (path.endsWith("_slab") || path.endsWith("_stairs")) return DefenseBlockKind.LADDER_SLAB;
-        if (mapCore != null && mapCore.isOriginalMapBlock(pos.getX(), pos.getY(), pos.getZ())) {
+        return classifyBlockPath(path);
+    }
+
+    /**
+     * Pure-Java BedWars defense block classifier. Only actual BedWars shop defense materials
+     * count toward bed defense layers; all map terrain/decorations (grass, dirt, sandstone,
+     * logs, stairs, slabs, fences, stone) return {@link DefenseBlockKind#ORIGINAL_MAP}.
+     */
+    public static DefenseBlockKind classifyBlockPath(String blockPath) {
+        if (blockPath == null || blockPath.isEmpty()) {
             return DefenseBlockKind.ORIGINAL_MAP;
         }
-        return DefenseBlockKind.WOOL;
+        String path = blockPath.toLowerCase(Locale.ROOT);
+        if (path.equals("air") || path.equals("cave_air") || path.equals("void_air")) {
+            return DefenseBlockKind.AIR;
+        }
+        if (path.equals("water") || path.equals("flowing_water")) {
+            return DefenseBlockKind.WATER_COVERED;
+        }
+        if (path.equals("obsidian") || path.equals("crying_obsidian")) {
+            return DefenseBlockKind.OBSIDIAN;
+        }
+        if (path.equals("end_stone") || path.equals("end_stone_bricks")) {
+            return DefenseBlockKind.ENDSTONE;
+        }
+        if (path.endsWith("_wool")) {
+            return DefenseBlockKind.WOOL;
+        }
+        if (path.endsWith("_planks")) {
+            return DefenseBlockKind.WOOD;
+        }
+        if (path.contains("glass") && !path.endsWith("_pane")) {
+            return DefenseBlockKind.GLASS;
+        }
+        if (path.equals("terracotta") || path.endsWith("_terracotta")) {
+            return DefenseBlockKind.TERRACOTTA;
+        }
+        if (path.equals("ladder")) {
+            return DefenseBlockKind.LADDER_SLAB;
+        }
+        return DefenseBlockKind.ORIGINAL_MAP;
     }
 
     private TeamDossier dossierFor(TeamColor team) {

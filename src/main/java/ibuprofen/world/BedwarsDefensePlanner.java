@@ -353,7 +353,8 @@ public final class BedwarsDefensePlanner {
                 break;
             }
             double airRatio = (double) layerAir / (double) layerTotal;
-            if (airRatio > 0.80) {
+            double maxAirRatio = (layer == 1) ? 0.80 : 0.75;
+            if (airRatio > maxAirRatio) {
                 consecutiveAirDominant++;
                 if (consecutiveAirDominant >= 2) {
                     break;

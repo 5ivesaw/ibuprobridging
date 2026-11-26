@@ -7,7 +7,9 @@ import ibuprofen.memory.MatchMemory;
 import ibuprofen.memory.ShoppingWishList;
 import ibuprofen.memory.TeamDossier;
 import ibuprofen.telemetry.DebugRecorder;
+import ibuprofen.world.BedwarsDefensePlanner;
 import ibuprofen.world.BedwarsDefensePlanner.DefenseBlockKind;
+import ibuprofen.world.BedwarsDefensePlanner.ToolProfile;
 import ibuprofen.world.BedwarsMapCore.TeamColor;
 import ibuprofen.world.BedwarsMatchState;
 import ibuprofen.world.WorldState;
@@ -193,5 +195,42 @@ final class Phase05MemoryEventTest {
         ws.onLevelSwap(bus, null);
         assertFalse(ws.matchState().isMatchStarted());
         assertNull(memory.getTeamDossier(TeamColor.BLUE));
+    }
+
+    @Test
+    void classifyBlockPathNeverMiscountsMapTerrainAsWoolAndDetectsEndstoneDefenseAccurately() {
+        assertEquals(DefenseBlockKind.ENDSTONE, MatchMemory.classifyBlockPath("end_stone"));
+        assertEquals(DefenseBlockKind.WOOL, MatchMemory.classifyBlockPath("blue_wool"));
+        assertEquals(DefenseBlockKind.WOOD, MatchMemory.classifyBlockPath("oak_planks"));
+        assertEquals(DefenseBlockKind.GLASS, MatchMemory.classifyBlockPath("blue_stained_glass"));
+        assertEquals(DefenseBlockKind.OBSIDIAN, MatchMemory.classifyBlockPath("obsidian"));
+        assertEquals(DefenseBlockKind.TERRACOTTA, MatchMemory.classifyBlockPath("red_terracotta"));
+
+        // Map terrain & architecture must NEVER default to WOOL or WOOD
+        assertEquals(DefenseBlockKind.ORIGINAL_MAP, MatchMemory.classifyBlockPath("grass_block"));
+        assertEquals(DefenseBlockKind.ORIGINAL_MAP, MatchMemory.classifyBlockPath("coarse_dirt"));
+        assertEquals(DefenseBlockKind.ORIGINAL_MAP, MatchMemory.classifyBlockPath("sandstone"));
+        assertEquals(DefenseBlockKind.ORIGINAL_MAP, MatchMemory.classifyBlockPath("oak_log"));
+        assertEquals(DefenseBlockKind.ORIGINAL_MAP, MatchMemory.classifyBlockPath("oak_stairs"));
+        assertEquals(DefenseBlockKind.ORIGINAL_MAP, MatchMemory.classifyBlockPath("oak_slab"));
+        assertEquals(DefenseBlockKind.ORIGINAL_MAP, MatchMemory.classifyBlockPath("glass_pane"));
+
+        // 2-layer Endstone defense with 1 blue wool + surrounding grass/sandstone must report ENDSTONE & 2 layers
+        var scan = BedwarsDefensePlanner.scanBedDefenseShell(
+                0, 65, 0, 1, 65, 0, 4, ToolProfile.bareHand(),
+                (x, y, z) -> {
+                    int distHead = Math.abs(x) + Math.abs(y - 65) + Math.abs(z);
+                    int distFoot = Math.abs(x - 1) + Math.abs(y - 65) + Math.abs(z);
+                    int d = Math.min(distHead, distFoot);
+                    if (d == 0) return DefenseBlockKind.AIR;
+                    if (x == 0 && y == 66 && z == 1) return MatchMemory.classifyBlockPath("blue_wool");
+                    if (d <= 2 && y >= 65) return MatchMemory.classifyBlockPath("end_stone");
+                    if (x >= 3 && y >= 65) return MatchMemory.classifyBlockPath("oak_log"); // nearby house wall
+                    return DefenseBlockKind.AIR;
+                });
+        assertEquals(DefenseBlockKind.ENDSTONE, scan.hardestBlock());
+        assertEquals(2, scan.layersDetected());
+        assertEquals(1, scan.counts().getOrDefault(DefenseBlockKind.WOOL, 0));
+        assertTrue(scan.counts().getOrDefault(DefenseBlockKind.ENDSTONE, 0) > 10);
     }
 }

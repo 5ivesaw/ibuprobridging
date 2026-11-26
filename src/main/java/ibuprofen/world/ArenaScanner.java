@@ -204,9 +204,9 @@ public final class ArenaScanner {
         boolean hasGrayWoolVote = false;
         BlockPos.MutableBlockPos mut = new BlockPos.MutableBlockPos();
 
-        for (int dx = -6; dx <= 6; dx++) {
-            for (int dy = -2; dy <= 4; dy++) {
-                for (int dz = -6; dz <= 6; dz++) {
+        for (int dx = -10; dx <= 10; dx++) {
+            for (int dy = -3; dy <= 10; dy++) {
+                for (int dz = -10; dz <= 10; dz++) {
                     mut.set(head.getX() + dx, head.getY() + dy, head.getZ() + dz);
                     Block b = level.getBlockState(mut).getBlock();
                     if (b instanceof AirBlock || b instanceof BedBlock) {
@@ -217,12 +217,20 @@ public final class ArenaScanner {
                     if (tc == TeamColor.UNKNOWN) {
                         continue;
                     }
-                    int weight = path.endsWith("_wool") ? 4 : (path.endsWith("_terracotta") || path.endsWith("_concrete") ? 2 : 1);
+                    boolean nearBed = Math.abs(dx) <= 3 && Math.abs(dz) <= 3 && dy >= 0 && dy <= 3;
+                    int weight;
                     if (path.endsWith("_wool")) {
+                        // Island roof flags/accents (outside the bed shell) are strong team signals;
+                        // a single stray wool block placed directly on a bed shouldn't overpower the island flag.
+                        weight = nearBed ? 2 : 4;
                         hasWoolVote = true;
                         if (tc == TeamColor.GRAY) {
                             hasGrayWoolVote = true;
                         }
+                    } else if (path.endsWith("_terracotta") || path.endsWith("_concrete")) {
+                        weight = 2;
+                    } else {
+                        weight = 1;
                     }
                     votes.merge(tc, weight, Integer::sum);
                 }
