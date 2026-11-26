@@ -167,7 +167,7 @@ public final class WorldState {
         BlockChange bc;
         int blockLimit = 256;
         while (blockLimit-- > 0 && (bc = pendingBlocks.poll()) != null) {
-            scanner.onBlockChanged(bc.pos(), bc.state(), mapCore);
+            scanner.onBlockChanged(level, bc.pos(), bc.state(), mapCore);
         }
 
         // 3. Refresh scoreboard at 4 Hz

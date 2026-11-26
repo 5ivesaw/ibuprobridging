@@ -146,8 +146,8 @@ public final class IbuCommand {
 
     public static void say(String text) {
         Minecraft mc = Minecraft.getInstance();
-        if (mc != null && mc.player != null) {
-            mc.player.displayClientMessage(Component.literal("[Ibu] " + text), false);
+        if (mc != null && mc.gui != null && mc.gui.hud != null && mc.gui.hud.getChat() != null) {
+            mc.gui.hud.getChat().addPlayerMessage(Component.literal("[Ibu] " + text), null, null);
         }
     }
 }

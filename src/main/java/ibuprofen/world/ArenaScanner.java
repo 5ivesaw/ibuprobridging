@@ -71,11 +71,11 @@ public final class ArenaScanner {
         }
     }
 
-    public void onBlockChanged(BlockPos pos, BlockState state, BedwarsMapCore mapCore) {
-        if (pos == null || state == null || mapCore == null) {
+    public void onBlockChanged(ClientLevel level, BlockPos pos, BlockState state, BedwarsMapCore mapCore) {
+        if (level == null || pos == null || state == null || mapCore == null) {
             return;
         }
-        boolean solid = isSolidForBedwars(state);
+        boolean solid = isSolidForBedwars(level, pos, state);
         mapCore.setPlayerPlaced(pos.getX(), pos.getY(), pos.getZ(), solid);
         if (state.getBlock() instanceof BedBlock) {
             TeamColor team = teamFromBedBlock(state.getBlock());
@@ -106,7 +106,7 @@ public final class ArenaScanner {
                     if (state.isAir()) {
                         continue;
                     }
-                    if (isSolidForBedwars(state)) {
+                    if (isSolidForBedwars(level, mut, state)) {
                         mapCore.setOriginalBlock(wx, wy, wz, true, false);
                     }
                     if (state.getBlock() instanceof BedBlock) {
@@ -120,8 +120,8 @@ public final class ArenaScanner {
         mapCore.markChunkScanned(cx, cz);
     }
 
-    private static boolean isSolidForBedwars(BlockState state) {
-        return !state.isAir() && state.blocksMotion();
+    private static boolean isSolidForBedwars(ClientLevel level, BlockPos pos, BlockState state) {
+        return !state.isAir() && state.getFluidState().isEmpty() && !state.getCollisionShape(level, pos).isEmpty();
     }
 
     private static TeamColor teamFromBedBlock(Block block) {
