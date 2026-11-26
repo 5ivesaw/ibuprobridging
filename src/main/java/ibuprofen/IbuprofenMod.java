@@ -50,6 +50,7 @@ public final class IbuprofenMod implements ClientModInitializer {
     public void onInitializeClient() {
         instance = this;
         Path gameDir = Minecraft.getInstance().gameDirectory.toPath();
+        this.settings.load(gameDir);
         this.debugRecorder = new DebugRecorder(gameDir);
 
         eventBus.subscribe(matchMemory::onEvent);

@@ -19,13 +19,14 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Custom-rendered dark-glass control panel toggled with '[' (MC 26.3 SDL3 KEY_LBRACKET).
- * Zero vanilla Minecraft buttons: tabbed sidebar, 2-column module cards, pill toggle switches,
- * live status pills, and 1-click access to every skill, visual overlay, and future Phase 2-6 module.
+ * Modern frosted-glass ClickGUI toggled with '[' (MC 26.3 SDL3 KEY_LBRACKET).
+ * Features native Gaussian background blur, smooth rounded cards, animated pill switches,
+ * live status pills, and 1-click HUD Layout Editor.
  */
 public final class IbuMenuScreen extends Screen {
 
@@ -45,6 +46,7 @@ public final class IbuMenuScreen extends Screen {
     }
 
     private record Card(
+            String id,
             String title,
             String subtitle,
             boolean isToggle,
@@ -54,27 +56,20 @@ public final class IbuMenuScreen extends Screen {
             Runnable onClick
     ) {}
 
-    private static final int PANEL_W = 528;
-    private static final int PANEL_H = 304;
-    private static final int HEADER_H = 38;
-    private static final int SIDEBAR_W = 132;
-    private static final int FOOTER_H = 22;
+    private static final int PANEL_W = 540;
+    private static final int PANEL_H = 316;
+    private static final int HEADER_H = 42;
+    private static final int SIDEBAR_W = 138;
+    private static final int FOOTER_H = 24;
 
-    // Palette (deep obsidian glass + cyan/emerald accents)
-    private static final int BG_BACKDROP = 0x8205080F;
-    private static final int BG_PANEL = 0xEB0B101B;
-    private static final int BG_HEADER = 0xF50F172A;
-    private static final int BG_SIDEBAR = 0xE60D1422;
-    private static final int BG_CARD = 0xE6131C2E;
-    private static final int BG_CARD_HOVER = 0xF51B2840;
-    private static final int BG_INFO = 0xD90E1626;
-    private static final int BORDER_SUBTLE = 0xFF1E293B;
-    private static final int BORDER_GLOW = 0x8838BDF8;
-    private static final int TEXT_PRIMARY = 0xFFF1F5F9;
+    private static final int TEXT_PRIMARY = 0xFFF8FAFC;
     private static final int TEXT_MUTED = 0xFF94A3B8;
     private static final int TEXT_DIM = 0xFF64748B;
 
     private static Tab activeTab = Tab.NAVIGATION;
+
+    private final Map<String, Float> toggleAnim = new HashMap<>();
+    private long lastFrameNanos = 0L;
 
     public IbuMenuScreen() {
         super(Component.literal("Ibuprobridging"));
@@ -87,116 +82,127 @@ public final class IbuMenuScreen extends Screen {
 
     @Override
     public void extractRenderState(GuiGraphicsExtractor gfx, int mouseX, int mouseY, float partialTick) {
+        long now = System.nanoTime();
+        float dt = lastFrameNanos == 0L ? 0.016f : Math.min(0.05f, (now - lastFrameNanos) / 1_000_000_000.0f);
+        lastFrameNanos = now;
+
         IbuprofenMod mod = IbuprofenMod.get();
         int left = (this.width - PANEL_W) / 2;
         int top = (this.height - PANEL_H) / 2;
         int right = left + PANEL_W;
         int bottom = top + PANEL_H;
 
-        // 1. Soft full-screen dim backdrop
-        gfx.fill(0, 0, this.width, this.height, BG_BACKDROP);
+        // 1. Native MC 26.3 Gaussian blur + subtle vignette backdrop
+        gfx.blurBeforeThisStratum();
+        gfx.fill(0, 0, this.width, this.height, 0x6604070E);
 
-        // 2. Main floating dark-glass container + subtle outer glow
-        gfx.fill(left - 1, top - 1, right + 1, bottom + 1, 0x44000000);
-        gfx.fill(left, top, right, bottom, BG_PANEL);
-        gfx.outline(left, top, PANEL_W, PANEL_H, BORDER_SUBTLE);
-        gfx.fill(left + 1, top, right - 1, top + 2, activeTab.accent);
+        // 2. Floating rounded dark-glass window + soft layered shadow
+        UiDraw.drawShadow(gfx, left, top, PANEL_W, PANEL_H, 10, 7);
+        UiDraw.fillRoundedGradient(gfx, left, top, PANEL_W, PANEL_H, 10, 0xEC101624, 0xF20A0E18);
+        UiDraw.drawRoundedOutline(gfx, left, top, PANEL_W, PANEL_H, 10, 0x2EFFFFFF);
 
-        // 3. Top Header Bar
-        gfx.fill(left + 1, top + 2, right - 1, top + HEADER_H, BG_HEADER);
-        gfx.fill(left + 1, top + HEADER_H, right - 1, top + HEADER_H + 1, BORDER_SUBTLE);
+        // 3. Header Bar
+        gfx.fill(left + 10, top + HEADER_H, right - 10, top + HEADER_H + 1, 0x1AFFFFFF);
 
-        // Brand mark + Phase badge
-        gfx.fill(left + 14, top + 14, left + 22, top + 22, 0xFF38BDF8);
-        gfx.fill(left + 16, top + 16, left + 20, top + 20, 0xFFE0F2FE);
-        gfx.text(this.font, "IBUPROBRIDGING", left + 28, top + 15, TEXT_PRIMARY);
+        // Glowing brand pill icon + crisp title
+        UiDraw.fillRoundedRect(gfx, left + 16, top + 14, 14, 14, 4, UiDraw.withAlpha(activeTab.accent, 0x33));
+        UiDraw.fillRoundedRect(gfx, left + 19, top + 17, 8, 8, 3, activeTab.accent);
+        gfx.text(this.font, "IBUPROBRIDGING", left + 36, top + 17, TEXT_PRIMARY, false);
 
-        int badgeX = left + 28 + this.font.width("IBUPROBRIDGING") + 8;
-        drawPill(gfx, badgeX, top + 12, "PHASE 1", 0x3338BDF8, 0xFF38BDF8);
+        int phaseX = left + 36 + this.font.width("IBUPROBRIDGING") + 8;
+        UiDraw.drawPill(gfx, this.font, phaseX, top + 13, "PHASE 1", UiDraw.withAlpha(activeTab.accent, 0x28), activeTab.accent);
 
-        // Close 'x' button on far right of header
-        int closeX = right - 28;
-        int closeY = top + 10;
-        boolean closeHover = inside(mouseX, mouseY, closeX, closeY, 18, 18);
-        gfx.fill(closeX, closeY, closeX + 18, closeY + 18, closeHover ? 0xCCEF4444 : 0xFF1E293B);
+        // Close button (top right)
+        int closeX = right - 32;
+        int closeY = top + 12;
+        boolean closeHover = UiDraw.inside(mouseX, mouseY, closeX, closeY, 18, 18);
+        UiDraw.fillRoundedRect(gfx, closeX, closeY, 18, 18, 5, closeHover ? 0xDDEF4444 : 0xFF1A2233);
         gfx.centeredText(this.font, "x", closeX + 9, closeY + 5, closeHover ? 0xFFFFFFFF : TEXT_MUTED);
 
-        // Live telemetry pills (ping, fps, REC) to the left of close button
+        // "Move HUD" pill button right next to close button
+        int hudBtnW = UiDraw.pillWidth(this.font, "Move HUD");
+        int hudBtnX = closeX - hudBtnW - 8;
+        int hudBtnY = top + 13;
+        boolean hudBtnHover = UiDraw.inside(mouseX, mouseY, hudBtnX, hudBtnY, hudBtnW, 15);
+        UiDraw.drawPill(gfx, this.font, hudBtnX, hudBtnY, "Move HUD",
+                hudBtnHover ? 0xFF0284C7 : 0xFF192438,
+                hudBtnHover ? 0xFFFFFFFF : 0xFF38BDF8);
+
+        // Live telemetry pills (ping, fps, REC)
         if (mod != null && this.minecraft != null) {
             int ping = IbuprofenMod.queryPingMs(this.minecraft, this.minecraft.player);
             int fps = this.minecraft.getFps();
             boolean rec = mod.debugRecorder() != null && mod.debugRecorder().isRecording();
 
-            int cursorX = closeX - 8;
+            int cursorX = hudBtnX - 8;
             if (rec) {
-                int w = pillWidth("REC");
+                int w = UiDraw.pillWidth(this.font, "REC");
                 cursorX -= w;
-                drawPill(gfx, cursorX, top + 12, "REC", 0x33EF4444, 0xFFF87171);
+                UiDraw.drawPill(gfx, this.font, cursorX, top + 13, "REC", 0x33EF4444, 0xFFF87171);
                 cursorX -= 6;
             }
             String fpsTxt = fps + " fps";
-            int fpsW = pillWidth(fpsTxt);
+            int fpsW = UiDraw.pillWidth(this.font, fpsTxt);
             cursorX -= fpsW;
-            drawPill(gfx, cursorX, top + 12, fpsTxt, 0xFF162033, 0xFFCBD5E1);
+            UiDraw.drawPill(gfx, this.font, cursorX, top + 13, fpsTxt, 0xFF151E30, 0xFFCBD5E1);
             cursorX -= 6;
 
             String pingTxt = (ping >= 0 ? ping + " ms" : "-- ms");
-            int pingColor = (ping < 0) ? TEXT_MUTED : (ping < 120 ? 0xFF4ADE80 : (ping < 250 ? 0xFFFACC15 : 0xFFF87171));
-            int pingW = pillWidth(pingTxt);
+            int pingCol = (ping < 0) ? TEXT_MUTED : (ping < 120 ? 0xFF4ADE80 : (ping < 250 ? 0xFFFACC15 : 0xFFF87171));
+            int pingW = UiDraw.pillWidth(this.font, pingTxt);
             cursorX -= pingW;
-            drawPill(gfx, cursorX, top + 12, pingTxt, 0xFF162033, pingColor);
+            UiDraw.drawPill(gfx, this.font, cursorX, top + 13, pingTxt, 0xFF151E30, pingCol);
         }
 
-        // 4. Left Sidebar
+        // 4. Left Sidebar Rail
         int bodyTop = top + HEADER_H + 1;
         int bodyBottom = bottom - FOOTER_H;
-        gfx.fill(left + 1, bodyTop, left + SIDEBAR_W, bodyBottom, BG_SIDEBAR);
-        gfx.fill(left + SIDEBAR_W, bodyTop, left + SIDEBAR_W + 1, bodyBottom, BORDER_SUBTLE);
+        gfx.fill(left + SIDEBAR_W, bodyTop + 8, left + SIDEBAR_W + 1, bodyBottom - 8, 0x1AFFFFFF);
 
         Tab[] tabs = Tab.values();
         for (int i = 0; i < tabs.length; i++) {
             Tab tab = tabs[i];
-            int ty = bodyTop + 10 + i * 32;
-            int tx = left + 8;
-            int tw = SIDEBAR_W - 16;
-            int th = 26;
+            int tx = left + 10;
+            int ty = bodyTop + 12 + i * 34;
+            int tw = SIDEBAR_W - 20;
+            int th = 28;
             boolean selected = (tab == activeTab);
-            boolean hover = inside(mouseX, mouseY, tx, ty, tw, th);
+            boolean hover = UiDraw.inside(mouseX, mouseY, tx, ty, tw, th);
 
             if (selected) {
-                gfx.fill(tx, ty, tx + tw, ty + th, 0xFF182438);
-                gfx.fill(tx, ty + 4, tx + 3, ty + th - 4, tab.accent);
-                gfx.outline(tx, ty, tw, th, 0x4438BDF8);
+                UiDraw.fillRoundedRect(gfx, tx, ty, tw, th, 7, UiDraw.withAlpha(tab.accent, 0x24));
+                UiDraw.drawRoundedOutline(gfx, tx, ty, tw, th, 7, UiDraw.withAlpha(tab.accent, 0x66));
+                UiDraw.fillRoundedRect(gfx, tx + 3, ty + 6, 3, th - 12, 1, tab.accent);
             } else if (hover) {
-                gfx.fill(tx, ty, tx + tw, ty + th, 0xAA162033);
+                UiDraw.fillRoundedRect(gfx, tx, ty, tw, th, 7, 0x18FFFFFF);
             }
-            gfx.fill(tx + 9, ty + 10, tx + 14, ty + 15, selected ? tab.accent : TEXT_DIM);
-            gfx.text(this.font, tab.label, tx + 20, ty + 9, selected ? TEXT_PRIMARY : TEXT_MUTED);
+            UiDraw.fillRoundedRect(gfx, tx + 11, ty + 11, 5, 5, 2, selected ? tab.accent : TEXT_DIM);
+            gfx.text(this.font, tab.label, tx + 21, ty + 10, selected ? TEXT_PRIMARY : TEXT_MUTED, false);
         }
 
-        // Always-accessible emergency STOP ALL button at bottom of sidebar
-        int stopX = left + 8;
-        int stopY = bodyBottom - 34;
-        int stopW = SIDEBAR_W - 16;
-        int stopH = 24;
-        boolean stopHover = inside(mouseX, mouseY, stopX, stopY, stopW, stopH);
+        // Emergency STOP ALL button pinned at bottom of sidebar
+        int stopX = left + 10;
+        int stopY = bodyBottom - 36;
+        int stopW = SIDEBAR_W - 20;
+        int stopH = 26;
+        boolean stopHover = UiDraw.inside(mouseX, mouseY, stopX, stopY, stopW, stopH);
         boolean hasSkill = mod != null && mod.activeSkill() != null;
-        int stopBg = stopHover ? 0xE6DC2626 : (hasSkill ? 0xCC991B1B : 0x667F1D1D);
-        gfx.fill(stopX, stopY, stopX + stopW, stopY + stopH, stopBg);
-        gfx.outline(stopX, stopY, stopW, stopH, stopHover ? 0xFFFCA5A5 : 0xAAEF4444);
-        gfx.centeredText(this.font, "STOP ALL", stopX + stopW / 2, stopY + 8, 0xFFFFFFFF);
+        int stopBg = stopHover ? 0xE6DC2626 : (hasSkill ? 0xCC991B1B : 0x55991B1B);
+        UiDraw.fillRoundedRect(gfx, stopX, stopY, stopW, stopH, 7, stopBg);
+        UiDraw.drawRoundedOutline(gfx, stopX, stopY, stopW, stopH, 7, stopHover ? 0xFFFCA5A5 : 0x88EF4444);
+        gfx.centeredText(this.font, "STOP ALL", stopX + stopW / 2, stopY + 9, 0xFFFFFFFF);
 
-        // 5. Right Content Area (2-column module cards + live info box)
-        int contentLeft = left + SIDEBAR_W + 14;
-        int contentW = PANEL_W - SIDEBAR_W - 28;
-        gfx.text(this.font, activeTab.label.toUpperCase(), contentLeft, bodyTop + 10, activeTab.accent);
+        // 5. Right Content Area (spacious 2-column rounded module cards)
+        int contentLeft = left + SIDEBAR_W + 16;
+        int contentW = PANEL_W - SIDEBAR_W - 32;
+        gfx.text(this.font, activeTab.label.toUpperCase(), contentLeft + 2, bodyTop + 12, activeTab.accent, false);
 
         if (mod != null) {
             List<Card> cards = buildCardsFor(activeTab, mod);
             int cardGap = 10;
             int cardW = (contentW - cardGap) / 2;
-            int cardH = 54;
-            int gridTop = bodyTop + 26;
+            int cardH = 56;
+            int gridTop = bodyTop + 28;
 
             for (int i = 0; i < cards.size(); i++) {
                 Card c = cards.get(i);
@@ -204,14 +210,14 @@ public final class IbuMenuScreen extends Screen {
                 int row = i / 2;
                 int cx = contentLeft + col * (cardW + cardGap);
                 int cy = gridTop + row * (cardH + cardGap);
-                drawCard(gfx, c, cx, cy, cardW, cardH, inside(mouseX, mouseY, cx, cy, cardW, cardH));
+                boolean hover = UiDraw.inside(mouseX, mouseY, cx, cy, cardW, cardH);
+                drawCard(gfx, c, cx, cy, cardW, cardH, hover, dt);
             }
 
-            // Extra live info card on Brain & Recorder tabs
             int rowsUsed = (cards.size() + 1) / 2;
             int infoY = gridTop + rowsUsed * (cardH + cardGap);
             int infoH = bodyBottom - infoY - 10;
-            if (infoH >= 44) {
+            if (infoH >= 48) {
                 if (activeTab == Tab.BRAIN) {
                     drawBrainLiveCard(gfx, mod, contentLeft, infoY, contentW, infoH);
                 } else if (activeTab == Tab.RECORDER) {
@@ -221,18 +227,17 @@ public final class IbuMenuScreen extends Screen {
         }
 
         // 6. Footer Bar
-        gfx.fill(left + 1, bodyBottom, right - 1, bodyBottom + 1, BORDER_SUBTLE);
-        gfx.fill(left + 1, bodyBottom + 1, right - 1, bottom - 1, BG_HEADER);
+        gfx.fill(left + 10, bodyBottom, right - 10, bodyBottom + 1, 0x1AFFFFFF);
         String activeStr = mod != null ? mod.activeSkillName() : "none";
         String bodyStr = mod != null ? mod.inputArbiter().formatActiveSummary() : "idle";
-        gfx.text(this.font, "Skill: " + activeStr + "   |   Body: " + bodyStr, left + 12, bodyBottom + 7, TEXT_MUTED);
+        gfx.text(this.font, "Skill: " + activeStr + "   •   Body: " + bodyStr, left + 14, bodyBottom + 8, TEXT_MUTED, false);
         String hint = "[ or ESC to close";
-        gfx.text(this.font, hint, right - 12 - this.font.width(hint), bodyBottom + 7, TEXT_DIM);
+        gfx.text(this.font, hint, right - 14 - this.font.width(hint), bodyBottom + 8, TEXT_DIM, false);
     }
 
     @Override
     public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
-        if (event == null || event.button() != 0) {
+        if (event == null || event.button() != InputConstants.MOUSE_BUTTON_LEFT) {
             return super.mouseClicked(event, doubleClick);
         }
         double mx = event.x();
@@ -247,35 +252,46 @@ public final class IbuMenuScreen extends Screen {
         int bodyBottom = bottom - FOOTER_H;
 
         // Close button
-        if (inside(mx, my, right - 28, top + 10, 18, 18)) {
+        int closeX = right - 32;
+        if (UiDraw.inside(mx, my, closeX, top + 12, 18, 18)) {
             closeMenu();
+            return true;
+        }
+
+        // Move HUD button
+        int hudBtnW = UiDraw.pillWidth(this.font, "Move HUD");
+        int hudBtnX = closeX - hudBtnW - 8;
+        if (UiDraw.inside(mx, my, hudBtnX, top + 13, hudBtnW, 15)) {
+            if (this.minecraft != null) {
+                this.minecraft.gui.setScreen(new HudEditorScreen(this));
+            }
             return true;
         }
 
         // Sidebar tabs
         Tab[] tabs = Tab.values();
         for (int i = 0; i < tabs.length; i++) {
-            int ty = bodyTop + 10 + i * 32;
-            if (inside(mx, my, left + 8, ty, SIDEBAR_W - 16, 26)) {
+            int ty = bodyTop + 12 + i * 34;
+            if (UiDraw.inside(mx, my, left + 10, ty, SIDEBAR_W - 20, 28)) {
                 activeTab = tabs[i];
                 return true;
             }
         }
 
         // Emergency STOP ALL
-        if (mod != null && inside(mx, my, left + 8, bodyBottom - 34, SIDEBAR_W - 16, 24)) {
+        if (mod != null && UiDraw.inside(mx, my, left + 10, bodyBottom - 36, SIDEBAR_W - 20, 26)) {
             IbuCommand.tryHandle(mod, "#ibu stop");
             return true;
         }
 
-        // Module cards in right content grid
+        // Module cards
         if (mod != null) {
-            int contentLeft = left + SIDEBAR_W + 14;
-            int contentW = PANEL_W - SIDEBAR_W - 28;
+            int contentLeft = left + SIDEBAR_W + 16;
+            int contentW = PANEL_W - SIDEBAR_W - 32;
             int cardGap = 10;
             int cardW = (contentW - cardGap) / 2;
-            int cardH = 54;
-            int gridTop = bodyTop + 26;
+            int cardH = 56;
+            int gridTop = bodyTop + 28;
 
             List<Card> cards = buildCardsFor(activeTab, mod);
             for (int i = 0; i < cards.size(); i++) {
@@ -283,7 +299,7 @@ public final class IbuMenuScreen extends Screen {
                 int row = i / 2;
                 int cx = contentLeft + col * (cardW + cardGap);
                 int cy = gridTop + row * (cardH + cardGap);
-                if (inside(mx, my, cx, cy, cardW, cardH)) {
+                if (UiDraw.inside(mx, my, cx, cy, cardW, cardH)) {
                     cards.get(i).onClick().run();
                     return true;
                 }
@@ -307,44 +323,59 @@ public final class IbuMenuScreen extends Screen {
         List<Card> cards = new ArrayList<>();
         switch (tab) {
             case NAVIGATION -> {
-                cards.add(new Card("Walk -> Crosshair", "Walk to looked-at block", false, false, "RUN", tab.accent, () -> {
+                cards.add(new Card("walk_cross", "Walk -> Crosshair", "Walk to looked-at block", false, false, "RUN", tab.accent, () -> {
                     walkToCrosshair(mod);
                     closeMenu();
                 }));
-                cards.add(new Card("Walk -> Shop", "Stand cleanly in front of NPC", false, false, "RUN", tab.accent, () -> {
+                cards.add(new Card("walk_shop", "Walk -> Shop", "Stand cleanly in front of NPC", false, false, "RUN", tab.accent, () -> {
                     IbuCommand.tryHandle(mod, "#ibu test walk shop");
                     closeMenu();
                 }));
-                cards.add(new Card("Walk -> Generator", "Snap to nearest dia/em gen", false, false, "RUN", tab.accent, () -> {
+                cards.add(new Card("walk_gen", "Walk -> Generator", "Snap to nearest dia/em gen", false, false, "RUN", tab.accent, () -> {
                     IbuCommand.tryHandle(mod, "#ibu test walk gen");
                     closeMenu();
                 }));
-                cards.add(new Card("Walk -> Nearest Bed", "Navigate to closest live bed", false, false, "RUN", tab.accent, () -> {
+                cards.add(new Card("walk_bed", "Walk -> Nearest Bed", "Navigate to closest live bed", false, false, "RUN", tab.accent, () -> {
                     IbuCommand.tryHandle(mod, "#ibu test walk bed");
                     closeMenu();
                 }));
             }
             case VISUALS -> {
-                cards.add(new Card("Path Line", "3D cyan route & jump arcs", true, cfg.showPath, null, tab.accent,
-                        () -> cfg.showPath = !cfg.showPath));
-                cards.add(new Card("Goal Box", "Gold wireframe at target", true, cfg.showGoalBox, null, tab.accent,
-                        () -> cfg.showGoalBox = !cfg.showGoalBox));
-                cards.add(new Card("Bed Markers", "Team-colored bed outlines", true, cfg.showBedMarkers, null, tab.accent,
-                        () -> cfg.showBedMarkers = !cfg.showBedMarkers));
-                cards.add(new Card("Shop Markers", "Item & upgrade NPC boxes", true, cfg.showShopMarkers, null, tab.accent,
-                        () -> cfg.showShopMarkers = !cfg.showShopMarkers));
-                cards.add(new Card("Status HUD", "Compact top-left live panel", true, cfg.showHud, null, tab.accent,
-                        () -> cfg.showHud = !cfg.showHud));
+                cards.add(new Card("vis_path", "Path Line", "3D cyan route & jump arcs", true, cfg.showPath, null, tab.accent, () -> {
+                    cfg.showPath = !cfg.showPath;
+                    cfg.save();
+                }));
+                cards.add(new Card("vis_goal", "Goal Box", "Gold wireframe at target", true, cfg.showGoalBox, null, tab.accent, () -> {
+                    cfg.showGoalBox = !cfg.showGoalBox;
+                    cfg.save();
+                }));
+                cards.add(new Card("vis_bed", "Bed Markers", "Team-colored bed outlines", true, cfg.showBedMarkers, null, tab.accent, () -> {
+                    cfg.showBedMarkers = !cfg.showBedMarkers;
+                    cfg.save();
+                }));
+                cards.add(new Card("vis_shop", "Shop Markers", "Item & upgrade NPC boxes", true, cfg.showShopMarkers, null, tab.accent, () -> {
+                    cfg.showShopMarkers = !cfg.showShopMarkers;
+                    cfg.save();
+                }));
+                cards.add(new Card("vis_hud", "Status HUD", "Floating live status card", true, cfg.showHud, null, tab.accent, () -> {
+                    cfg.showHud = !cfg.showHud;
+                    cfg.save();
+                }));
+                cards.add(new Card("vis_hud_pos", "Edit HUD Layout", "Drag HUD card anywhere", false, false, "EDIT", 0xFF38BDF8, () -> {
+                    if (this.minecraft != null) {
+                        this.minecraft.gui.setScreen(new HudEditorScreen(this));
+                    }
+                }));
             }
             case BRAIN -> {
                 String prof = capitalize(mod.inputArbiter().profile().name());
-                cards.add(new Card("Motor Profile", "Human aim & click style", false, true, prof.toUpperCase(), tab.accent,
+                cards.add(new Card("brain_prof", "Motor Profile", "Human aim & click preset", false, true, prof.toUpperCase(), tab.accent,
                         () -> cycleProfile(mod)));
-                cards.add(new Card("Dump MatchMemory", "Print beds & wish list to chat", false, false, "CHAT", tab.accent, () -> {
+                cards.add(new Card("brain_mem", "Dump MatchMemory", "Print beds & wish list to chat", false, false, "CHAT", tab.accent, () -> {
                     IbuCommand.tryHandle(mod, "#ibu mem");
                     closeMenu();
                 }));
-                cards.add(new Card("Dump Status", "Print map, ping & channels", false, false, "CHAT", tab.accent, () -> {
+                cards.add(new Card("brain_status", "Dump Status", "Print map, ping & channels", false, false, "CHAT", tab.accent, () -> {
                     IbuCommand.tryHandle(mod, "#ibu status");
                     closeMenu();
                 }));
@@ -352,9 +383,9 @@ public final class IbuMenuScreen extends Screen {
             case RECORDER -> {
                 boolean autoRec = mod.worldState().isAutoRecord();
                 boolean recOn = mod.debugRecorder() != null && mod.debugRecorder().isRecording();
-                cards.add(new Card("Auto-Record", "Rotate .jsonl.gz every match", true, autoRec, null, tab.accent,
+                cards.add(new Card("rec_auto", "Auto-Record", "Rotate .jsonl.gz every match", true, autoRec, null, tab.accent,
                         () -> mod.worldState().setAutoRecord(!mod.worldState().isAutoRecord())));
-                cards.add(new Card("Debug Recording", recOn ? "Stop & flush current log" : "Start lightweight log now",
+                cards.add(new Card("rec_now", "Debug Recording", recOn ? "Stop & flush current log" : "Start lightweight log now",
                         true, recOn, null, 0xFFF87171,
                         () -> IbuCommand.tryHandle(mod, recOn ? "#ibu rec stop" : "#ibu rec start")));
             }
@@ -362,86 +393,68 @@ public final class IbuMenuScreen extends Screen {
         return cards;
     }
 
-    private void drawCard(GuiGraphicsExtractor gfx, Card c, int x, int y, int w, int h, boolean hover) {
-        gfx.fill(x, y, x + w, y + h, hover ? BG_CARD_HOVER : BG_CARD);
-        int border = hover ? BORDER_GLOW : (c.isToggle() && c.enabled() ? withAlpha(c.accent(), 0x88) : BORDER_SUBTLE);
-        gfx.outline(x, y, w, h, border);
+    private void drawCard(GuiGraphicsExtractor gfx, Card c, int x, int y, int w, int h, boolean hover, float dt) {
+        int topCol = hover ? 0xF01C263B : 0xE6141C2E;
+        int botCol = hover ? 0xF0161F31 : 0xE6101624;
+        UiDraw.fillRoundedGradient(gfx, x, y, w, h, 8, topCol, botCol);
 
-        if (c.isToggle() && c.enabled()) {
-            gfx.fill(x + 1, y + 6, x + 4, y + h - 6, c.accent());
-        } else if (hover) {
-            gfx.fill(x + 1, y + 10, x + 3, y + h - 10, c.accent());
-        }
+        int borderCol = hover
+                ? UiDraw.withAlpha(c.accent(), 0xAA)
+                : (c.isToggle() && c.enabled() ? UiDraw.withAlpha(c.accent(), 0x55) : 0x22FFFFFF);
+        UiDraw.drawRoundedOutline(gfx, x, y, w, h, 8, borderCol);
 
-        gfx.text(this.font, c.title(), x + 11, y + 12, TEXT_PRIMARY);
-        String sub = trimToWidth(c.subtitle(), w - 22);
-        gfx.text(this.font, sub, x + 11, y + 32, TEXT_MUTED);
+        gfx.text(this.font, c.title(), x + 12, y + 13, TEXT_PRIMARY, false);
+        gfx.text(this.font, trimToWidth(c.subtitle(), w - 24), x + 12, y + 34, TEXT_MUTED, false);
 
         if (c.isToggle()) {
-            drawTogglePill(gfx, x + w - 40, y + 10, c.enabled(), c.accent());
+            float target = c.enabled() ? 1.0f : 0.0f;
+            float cur = toggleAnim.getOrDefault(c.id(), target);
+            cur += (target - cur) * Math.min(1.0f, dt * 14.0f);
+            toggleAnim.put(c.id(), cur);
+            UiDraw.drawToggleSwitch(gfx, x + w - 42, y + 11, cur, c.accent());
         } else if (c.badge() != null) {
-            int bw = pillWidth(c.badge());
-            int bg = hover ? withAlpha(c.accent(), 0x55) : 0xFF1E293B;
+            int bw = UiDraw.pillWidth(this.font, c.badge());
+            int bg = hover ? UiDraw.withAlpha(c.accent(), 0x44) : 0xFF1C2538;
             int fg = hover ? 0xFFFFFFFF : c.accent();
-            drawPill(gfx, x + w - bw - 10, y + 9, c.badge(), bg, fg);
+            UiDraw.drawPill(gfx, this.font, x + w - bw - 10, y + 10, c.badge(), bg, fg);
         }
-    }
-
-    private void drawTogglePill(GuiGraphicsExtractor gfx, int x, int y, boolean on, int accent) {
-        int trackW = 28;
-        int trackH = 12;
-        int trackBg = on ? withAlpha(accent, 0xCC) : 0xFF334155;
-        gfx.fill(x, y, x + trackW, y + trackH, trackBg);
-        gfx.outline(x, y, trackW, trackH, on ? accent : 0xFF475569);
-        int knobX = on ? (x + trackW - 10) : (x + 2);
-        gfx.fill(knobX, y + 2, knobX + 8, y + trackH - 2, 0xFFFFFFFF);
     }
 
     private void drawBrainLiveCard(GuiGraphicsExtractor gfx, IbuprofenMod mod, int x, int y, int w, int h) {
-        gfx.fill(x, y, x + w, y + h, BG_INFO);
-        gfx.outline(x, y, w, h, BORDER_SUBTLE);
-        gfx.text(this.font, "LIVE MATCH MEMORY", x + 10, y + 8, 0xFFA78BFA);
+        UiDraw.fillRoundedRect(gfx, x, y, w, h, 8, 0xCC0E1422);
+        UiDraw.drawRoundedOutline(gfx, x, y, w, h, 8, 0x22FFFFFF);
+        gfx.text(this.font, "LIVE MATCH MEMORY", x + 12, y + 9, 0xFFA78BFA, false);
 
         Map<?, TeamDossier> teams = mod.matchMemory().getAllTeamDossiers();
         List<ShoppingWishList.WishItem> wish = mod.matchMemory().computeWishList();
 
         String bedsLine = "Beds tracked: " + teams.size()
-                + "   |   Enemies tracked: " + mod.matchMemory().getAllEnemyDossiers().size();
-        gfx.text(this.font, trimToWidth(bedsLine, w - 20), x + 10, y + 22, TEXT_PRIMARY);
+                + "   •   Enemies tracked: " + mod.matchMemory().getAllEnemyDossiers().size();
+        gfx.text(this.font, trimToWidth(bedsLine, w - 24), x + 12, y + 24, TEXT_PRIMARY, false);
 
         String wishLine = wish.isEmpty()
                 ? "Wish List: empty (no counter-items needed yet)"
-                : "Top Wish: [" + wish.get(0).priority() + "] " + wish.get(0).itemId() + " - " + wish.get(0).reason();
-        gfx.text(this.font, trimToWidth(wishLine, w - 20), x + 10, y + 35, 0xFFFACC15);
+                : "Top Wish: [" + wish.get(0).priority() + "] " + wish.get(0).itemId() + " — " + wish.get(0).reason();
+        gfx.text(this.font, trimToWidth(wishLine, w - 24), x + 12, y + 38, 0xFFFACC15, false);
     }
 
     private void drawRecorderLiveCard(GuiGraphicsExtractor gfx, IbuprofenMod mod, int x, int y, int w, int h) {
-        gfx.fill(x, y, x + w, y + h, BG_INFO);
-        gfx.outline(x, y, w, h, BORDER_SUBTLE);
-        gfx.text(this.font, "TELEMETRY STATUS", x + 10, y + 8, 0xFFFBBF24);
+        UiDraw.fillRoundedRect(gfx, x, y, w, h, 8, 0xCC0E1422);
+        UiDraw.drawRoundedOutline(gfx, x, y, w, h, 8, 0x22FFFFFF);
+        gfx.text(this.font, "TELEMETRY STATUS", x + 12, y + 9, 0xFFFBBF24, false);
 
         DebugRecorder rec = mod.debugRecorder();
         if (rec != null && rec.isRecording()) {
             String file = rec.currentFile() != null ? rec.currentFile().getFileName().toString() : "active";
-            gfx.text(this.font, trimToWidth("File: " + file, w - 20), x + 10, y + 22, TEXT_PRIMARY);
+            gfx.text(this.font, trimToWidth("File: " + file, w - 24), x + 12, y + 24, TEXT_PRIMARY, false);
             long kb = rec.uncompressedBytes() / 1024L;
-            gfx.text(this.font, "Events: " + rec.lineCount() + "   |   Raw: " + kb + " KB (gzipped on disk)",
-                    x + 10, y + 35, 0xFF4ADE80);
+            gfx.text(this.font, "Events: " + rec.lineCount() + "   •   Raw: " + kb + " KB (gzipped on disk)",
+                    x + 12, y + 38, 0xFF4ADE80, false);
         } else {
-            gfx.text(this.font, "Recorder is idle (zero disk/CPU overhead).", x + 10, y + 22, TEXT_MUTED);
+            gfx.text(this.font, "Recorder is idle (zero disk/CPU overhead).", x + 12, y + 24, TEXT_MUTED, false);
             gfx.text(this.font, "Auto-record starts automatically when a BedWars match begins.",
-                    x + 10, y + 35, TEXT_DIM);
+                    x + 12, y + 38, TEXT_DIM, false);
         }
-    }
-
-    private int pillWidth(String text) {
-        return this.font.width(text) + 12;
-    }
-
-    private void drawPill(GuiGraphicsExtractor gfx, int x, int y, String text, int bg, int fg) {
-        int w = pillWidth(text);
-        gfx.fill(x, y, x + w, y + 14, bg);
-        gfx.text(this.font, text, x + 6, y + 3, fg);
     }
 
     private String trimToWidth(String text, int maxPx) {
@@ -460,14 +473,6 @@ public final class IbuMenuScreen extends Screen {
         if (this.minecraft != null) {
             this.minecraft.gui.setScreen(null);
         }
-    }
-
-    private static boolean inside(double mx, double my, int x, int y, int w, int h) {
-        return mx >= x && mx <= x + w && my >= y && my <= y + h;
-    }
-
-    private static int withAlpha(int rgb, int alpha) {
-        return ((alpha & 0xFF) << 24) | (rgb & 0x00FFFFFF);
     }
 
     private static void walkToCrosshair(IbuprofenMod mod) {
